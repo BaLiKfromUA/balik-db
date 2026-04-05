@@ -1,10 +1,10 @@
 mod cli;
 
 use std::process::ExitCode;
- 
+
 fn main() -> ExitCode {
     let args = cli::parse();
- 
+
     match args.command {
         cli::Command::Doctor => println!("TODO: run doctor"),
         cli::Command::Init { path } => println!("TODO: init at '{}'", path.display()),
