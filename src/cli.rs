@@ -22,3 +22,15 @@ pub fn parse() -> Args {
     Args::parse()
 }
  
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+    use super::Args;
+
+    #[test]
+    fn verify_cli() {
+	// based on https://docs.rs/clap/latest/clap/_tutorial/index.html#testing
+        Args::command().debug_assert();
+    }
+}
