@@ -13,3 +13,12 @@ fn help_succeeds() {
         .success()
         .stdout(predicate::str::contains("Usage:"));
 }
+
+#[test]
+fn unexpected_command_fails() {
+    balik_cli()
+        .arg("test")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+}
