@@ -32,7 +32,12 @@ fn print_os_info(out: &mut impl Write) {
 fn check_database(out: &mut impl Write, path: &Path) {
     if !path.exists() {
         writeln!(out, "[!!] database not found at '{}'", path.display()).unwrap();
-        writeln!(out, "     run `balik-cli init --db {}` to create one", path.display()).unwrap();
+        writeln!(
+            out,
+            "     run `balik-cli init --db {}` to create one",
+            path.display()
+        )
+        .unwrap();
         return;
     }
 
