@@ -1,3 +1,33 @@
-fn main() {
-    println!("Hello, world!");
+mod catalog;
+mod cli;
+mod error;
+
+use std::io::IsTerminal;
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let args = cli::parse();
+
+    tracing_subscriber::fmt()
+        .with_max_level(args.verbose.tracing_level_filter())
+        .with_writer(std::io::stdout)
+        .with_ansi(std::io::stdout().is_terminal())
+        .without_time()
+        .with_target(false)
+        .init();
+
+    tracing::debug!(?args.command, "dispatching command");
+
+    let result: Result<(), Box<dyn std::error::Error>> = match args.command {
+        cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
+        cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
