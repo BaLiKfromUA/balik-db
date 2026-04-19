@@ -1,4 +1,4 @@
-# balik-db
+# balik-db (WIP!)
 
 <img src="docs/images/logo.png" align="right" height="200" alt="balik-db logo" />
 
