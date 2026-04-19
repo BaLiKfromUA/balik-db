@@ -8,7 +8,7 @@ fn main() -> ExitCode {
     let args = cli::parse();
 
     let result: Result<(), Box<dyn std::error::Error>> = match args.command {
-        cli::Command::Doctor => commands::doctor::run().map_err(Into::into),
+        cli::Command::Doctor {path} => commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => commands::init::run(&path).map_err(Into::into),
     };
 

@@ -10,10 +10,13 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    Doctor,
+    Doctor {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+    },
 
     Init {
-        #[arg(default_value = "balik_data")]
+        #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
     },
 }
