@@ -25,6 +25,44 @@ pub enum Command {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
     },
+
+    /// Create a new table.
+    TableCreate {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// Table name.
+        #[arg(long)]
+        table: String,
+        /// Comma-separated `name:TYPE` pairs, e.g. "id:INT,name:TEXT".
+        /// Supported types: INT, TEXT.
+        #[arg(long)]
+        columns: String,
+        /// Override the default row-group size for this table.
+        #[arg(long = "row-group-size")]
+        row_group_size: Option<u32>,
+    },
+
+    /// List all tables in the database.
+    TableList {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+    },
+
+    /// Print the schema and layout info for one table.
+    TableDescribe {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        #[arg(long)]
+        table: String,
+    },
+
+    /// Drop a table and its on-disk files.
+    TableDrop {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        #[arg(long)]
+        table: String,
+    },
 }
 
 pub fn parse() -> Args {
