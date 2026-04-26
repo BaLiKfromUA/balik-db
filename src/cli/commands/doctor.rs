@@ -303,8 +303,7 @@ mod tests {
         let db_path = tmp.path().join("testdb");
         crate::catalog::metadata::initialize(&db_path).unwrap();
         // Write garbage where catalog.toml lives.
-        std::fs::write(db_path.join("catalog.toml"), "not toml at all =====")
-            .unwrap();
+        std::fs::write(db_path.join("catalog.toml"), "not toml at all =====").unwrap();
 
         let (output, ok) = run_doctor(&db_path);
 

@@ -17,7 +17,9 @@ const ROW_GROUPS_DIR: &str = "row_groups";
 
 /// Path of a row group directory within a table dir.
 fn row_group_dir(table_dir: &Path, group_id: u32) -> PathBuf {
-    table_dir.join(ROW_GROUPS_DIR).join(format!("{group_id:06}"))
+    table_dir
+        .join(ROW_GROUPS_DIR)
+        .join(format!("{group_id:06}"))
 }
 
 /// Create a row group directory with one empty `.col` file per column.
