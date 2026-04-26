@@ -381,6 +381,22 @@ fn table_create_writes_expected_layout() {
 
     let catalog = std::fs::read_to_string(db.join("catalog.toml")).unwrap();
     assert!(catalog.contains("storage_track = \"column-store\""));
+
+    // Row group 000000 is materialized at create time with one empty .col
+    // file per column. Each file is exactly the 56-byte header.
+    let rg0 = table_dir.join("row_groups").join("000000");
+    assert!(rg0.is_dir(), "row_groups/000000/ should exist");
+    for col in ["id.col", "name.col"] {
+        let p = rg0.join(col);
+        assert!(p.is_file(), "{col} should exist in row group 0");
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(
+            bytes.len(),
+            56,
+            "{col} should be exactly 56 bytes (header only)"
+        );
+        assert_eq!(&bytes[0..8], b"BALIKCOL", "{col} should start with magic");
+    }
 }
 
 #[test]

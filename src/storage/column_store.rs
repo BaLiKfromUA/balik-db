@@ -4,12 +4,31 @@
 //! delegates straight through. The data-plane methods stay `unimplemented!`
 //! until Stage 2 adds row groups and column-file IO.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use crate::catalog::schema::Schema;
+use crate::catalog::schema::{Column, Schema};
 use crate::catalog::tables::{Catalog, TableDescriptor, TableId, TableOptions};
 use crate::error::Error;
+use crate::storage::column_file;
 use crate::storage::{Record, Rid, Storage, TableHandle};
+
+const ROW_GROUPS_DIR: &str = "row_groups";
+
+/// Path of a row group directory within a table dir.
+fn row_group_dir(table_dir: &Path, group_id: u32) -> PathBuf {
+    table_dir.join(ROW_GROUPS_DIR).join(format!("{group_id:06}"))
+}
+
+/// Create a row group directory with one empty `.col` file per column.
+fn materialize_row_group(rg_dir: &Path, columns: &[Column]) -> Result<(), Error> {
+    fs::create_dir_all(rg_dir).map_err(|e| Error::io("create row group dir", e))?;
+    for col in columns {
+        let col_path = rg_dir.join(format!("{}.col", col.name));
+        column_file::write_empty(&col_path, col.ty)?;
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct ColumnStore {
@@ -61,7 +80,25 @@ impl Storage for ColumnStore {
         schema: Schema,
         options: TableOptions,
     ) -> Result<TableId, Error> {
-        self.catalog.create_table(name, schema, options)
+        // Catalog owns table dir + manifest. Row-group layout is column-store
+        // specific and lives below this layer — keeps catalog usable for any
+        // future track.
+        let columns = schema.columns.clone();
+        let id = self.catalog.create_table(name, schema, options)?;
+        let table_dir = self.catalog.table_dir(name)?;
+        let rg_dir = row_group_dir(&table_dir, 0);
+        if let Err(e) = materialize_row_group(&rg_dir, &columns) {
+            // Roll back the catalog publish so we don't leave a half-formed
+            // table around. drop_table failure is logged inside the catalog.
+            tracing::warn!(
+                table = %name,
+                error = %e,
+                "failed to materialize initial row group, dropping table"
+            );
+            let _ = self.catalog.drop_table(name);
+            return Err(e);
+        }
+        Ok(id)
     }
 
     fn open_table(&self, name: &str) -> Result<TableHandle, Error> {
@@ -203,6 +240,33 @@ mod tests {
         let desc = store.describe_table("users").unwrap();
         assert_eq!(desc.name, "users");
         assert_eq!(desc.schema, schema_users());
+    }
+
+    #[test]
+    fn create_table_materializes_row_group_zero() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+
+        let rg0 = db
+            .join("tables")
+            .join("00000001")
+            .join("row_groups")
+            .join("000000");
+        assert!(rg0.is_dir());
+
+        // id.col -> INT, name.col -> TEXT, both empty headers.
+        let id_h = column_file::read_header(&rg0.join("id.col")).unwrap();
+        assert_eq!(id_h.logical_type, ColumnType::Int);
+        assert_eq!(id_h.row_count, 0);
+        assert_eq!(id_h.null_count, 0);
+        assert!(!id_h.has_nulls());
+
+        let name_h = column_file::read_header(&rg0.join("name.col")).unwrap();
+        assert_eq!(name_h.logical_type, ColumnType::Text);
+        assert_eq!(name_h.row_count, 0);
     }
 
     #[test]

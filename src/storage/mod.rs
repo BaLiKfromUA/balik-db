@@ -18,6 +18,7 @@
 //! declared on the trait so callers can compile against the final contract;
 //! their bodies panic with `unimplemented!` until Stage 2.
 
+pub mod column_file;
 pub mod column_store;
 
 use std::path::PathBuf;

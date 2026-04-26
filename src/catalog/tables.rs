@@ -27,7 +27,6 @@ const CATALOG_FILE: &str = "catalog.toml";
 const CATALOG_TMP_FILE: &str = "catalog.toml.tmp";
 const MANIFEST_FILE: &str = "manifest.toml";
 const TABLES_DIR: &str = "tables";
-const ROW_GROUPS_DIR: &str = "row_groups";
 const STORAGE_TRACK: &str = "column-store";
 const FORMAT_VERSION: u32 = 1;
 
@@ -185,9 +184,11 @@ impl Catalog {
 
         // Filesystem layout first; catalog publish happens last so a crash
         // mid-create leaves an orphan dir, never a dangling catalog entry.
+        // Storage-track-specific layout (row groups for column store, heap
+        // for row store, etc.) is materialized by the caller after this
+        // function returns.
         tracing::debug!(table_id = id, path = %dir_abs.display(), "creating table dir");
-        fs::create_dir_all(dir_abs.join(ROW_GROUPS_DIR))
-            .map_err(|e| Error::io("create table dir", e))?;
+        fs::create_dir_all(&dir_abs).map_err(|e| Error::io("create table dir", e))?;
 
         let row_group_size = options.row_group_size.unwrap_or(DEFAULT_ROW_GROUP_SIZE);
         let manifest = ManifestFile {
@@ -248,6 +249,17 @@ impl Catalog {
 
     pub fn list_tables(&self) -> Vec<&str> {
         self.tables.keys().map(String::as_str).collect()
+    }
+
+    /// Absolute path to a table's directory. Used by storage-track code
+    /// (column-store row groups, etc.) that needs to lay files out below
+    /// the catalog-managed table dir without going through `describe_table`.
+    pub fn table_dir(&self, name: &str) -> Result<PathBuf, Error> {
+        let entry = self
+            .tables
+            .get(name)
+            .ok_or_else(|| Error::no_such_table(name))?;
+        Ok(self.root.join(&entry.dir))
     }
 
     pub fn describe_table(&self, name: &str) -> Result<TableDescriptor, Error> {
@@ -351,7 +363,9 @@ mod tests {
     }
 
     #[test]
-    fn create_table_writes_expected_layout() {
+    fn create_table_writes_catalog_layout() {
+        // Catalog only owns the table dir + manifest. Storage-track layout
+        // (row_groups/...) is materialized one level up in ColumnStore.
         let tmp = TempDir::new().unwrap();
         let mut cat = Catalog::load(tmp.path()).unwrap();
         let id = cat
@@ -362,9 +376,26 @@ mod tests {
         let table_dir = tmp.path().join("tables").join("00000001");
         assert!(table_dir.is_dir());
         assert!(table_dir.join("manifest.toml").is_file());
-        assert!(table_dir.join("row_groups").is_dir());
         assert!(tmp.path().join("catalog.toml").is_file());
         assert!(!tmp.path().join("catalog.toml.tmp").exists());
+    }
+
+    #[test]
+    fn table_dir_returns_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        let mut cat = Catalog::load(tmp.path()).unwrap();
+        cat.create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let dir = cat.table_dir("users").unwrap();
+        assert_eq!(dir, tmp.path().join("tables").join("00000001"));
+    }
+
+    #[test]
+    fn table_dir_for_unknown_table_fails() {
+        let tmp = TempDir::new().unwrap();
+        let cat = Catalog::load(tmp.path()).unwrap();
+        let err = cat.table_dir("ghosts").unwrap_err();
+        assert!(err.to_string().contains("no such table"));
     }
 
     #[test]
