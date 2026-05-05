@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::catalog::schema::{Column, Schema};
 use crate::catalog::tables::{Catalog, DEFAULT_ROW_GROUP_SIZE, TableDescriptor, TableId, TableOptions};
 use crate::error::Error;
-use crate::storage::{Record, Rid, Storage, TableHandle, column_file, delete_bitmap};
+use crate::storage::{Record, Rid, ScanIter, Storage, TableHandle, column_file, delete_bitmap};
 
 const ROW_GROUPS_DIR: &str = "row_groups";
 
@@ -154,10 +154,7 @@ impl Storage for ColumnStore {
         unimplemented!("delete: implemented in Stage 2")
     }
 
-    fn scan<'a>(
-        &'a self,
-        _table: &TableHandle,
-    ) -> Result<Box<dyn Iterator<Item = Result<(Rid, Record), Error>> + 'a>, Error> {
+    fn scan<'a>(&'a self, _table: &TableHandle) -> Result<ScanIter<'a>, Error> {
         unimplemented!("scan: implemented in Stage 2")
     }
 }

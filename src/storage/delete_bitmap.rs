@@ -49,6 +49,8 @@ const FORMAT_VERSION: u32 = 1;
 pub const FILE_NAME: &str = "deletes.bm";
 
 /// Parsed view of a `deletes.bm` header.
+// Stage 2: read_header returns this; Stage 1 only constructs it inside tests.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub format_version: u32,
@@ -83,6 +85,8 @@ pub fn write_empty(path: &Path, row_group_size: u32) -> Result<(), Error> {
 }
 
 /// Parse the header of an existing `deletes.bm` file.
+// Stage 2: scan / get will call this; Stage 1 only exercises it in tests.
+#[allow(dead_code)]
 pub fn read_header(path: &Path) -> Result<Header, Error> {
     let bytes = fs::read(path).map_err(|e| Error::io("read delete bitmap", e))?;
     if bytes.len() < HEADER_SIZE {

@@ -43,6 +43,8 @@ const HEADER_SIZE: usize = 56;
 const MAGIC: &[u8; 8] = b"BALIKCOL";
 const FORMAT_VERSION: u32 = 1;
 
+// Stage 2: read by the scan path; Stage 1 just zeros the flags byte.
+#[allow(dead_code)]
 const FLAG_HAS_NULLS: u8 = 0b0000_0001;
 
 const LOGICAL_INT: u8 = 0;
@@ -50,6 +52,9 @@ const LOGICAL_TEXT: u8 = 1;
 const PHYSICAL_RAW: u8 = 0;
 
 /// Parsed view of a `.col` header.
+// Stage 2: read_header returns this; Stage 1 only constructs it inside tests
+// so dead-code analysis doesn't see a production caller.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub format_version: u32,
@@ -63,6 +68,9 @@ pub struct Header {
 }
 
 impl Header {
+    // Stage 2: the scan path branches on this. Stage 1 only checks it in
+    // tests pinning the `flags` byte layout.
+    #[allow(dead_code)]
     pub fn has_nulls(&self) -> bool {
         self.flags & FLAG_HAS_NULLS != 0
     }
@@ -75,6 +83,8 @@ fn logical_type_byte(ty: ColumnType) -> u8 {
     }
 }
 
+// Stage 2: called from read_header on the scan path; Stage 1 has no caller.
+#[allow(dead_code)]
 fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
     match b {
         LOGICAL_INT => Ok(ColumnType::Int),
@@ -107,6 +117,7 @@ pub fn write_empty(path: &Path, ty: ColumnType) -> Result<(), Error> {
 
 /// Parse the header of an existing `.col` file. Used by tests today; will
 /// be the entry point for scan/skip-pruning in Stage 2.
+#[allow(dead_code)]
 pub fn read_header(path: &Path) -> Result<Header, Error> {
     let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
     if bytes.len() < HEADER_SIZE {

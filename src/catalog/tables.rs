@@ -46,7 +46,11 @@ pub struct TableDescriptor {
     pub schema: Schema,
     pub row_group_size: u32,
     pub storage_track: String,
+    // Stage 2: open_table forwards this into TableHandle for the scan path.
+    #[allow(dead_code)]
     pub dir: PathBuf,
+    // Stage 2: insert reads/advances this; Stage 1 just persists it as 0.
+    #[allow(dead_code)]
     pub next_rid: u64,
 }
 
@@ -298,6 +302,9 @@ impl Catalog {
     /// At the catalog level, opening is the same as describing; later stages
     /// may extend `TableDescriptor` with cached file handles or row-group
     /// indexes.
+    // Stage 2: ColumnStore::open_table forwards into this. Stage 1 has no
+    // production caller.
+    #[allow(dead_code)]
     pub fn open_table(&self, name: &str) -> Result<TableDescriptor, Error> {
         self.describe_table(name)
     }
