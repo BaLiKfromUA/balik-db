@@ -43,7 +43,15 @@ Initialized empty balik database at './balik_db'
 Created table 'orders' (id=1) in './balik_db'
 ```
 
-4. Descibe table
+4. List tables
+
+```bash
+./balik-cli table-list
+
+orders
+```
+
+5. Describe table
 
 ```bash
 ./balik-cli table-describe --table orders
@@ -57,8 +65,15 @@ Columns:
   total                    INT    NOT NULL
 ```
 
+6. Drop a table
 
-5. Run basic validation
+```bash
+./balik-cli table-drop --table orders
+
+Dropped table 'orders' from './balik_db'
+```
+
+7. Run basic validation
 
 ```bash
 ./balik-cli doctor
@@ -106,18 +121,27 @@ Initialized empty balik database at './demo-db'
 src/
   main.rs              // entry point: parse args, dispatch, exit code
   error.rs             // shared Error type used across modules
-  catalog/             // on-disk metadata and (later) table schemas
+  checksum.rs          // CRC32 wrapper for catalog.toml / manifest.toml
+  catalog/             // on-disk metadata and table schemas
     mod.rs
     metadata.rs        // bootstrap metadata file (magic, version, ...)
-    tables.rs          // stub — table/column definitions (Stage 1+)
+    schema.rs          // logical column types, schema validation, --columns DSL
+    tables.rs          // persistent catalog: catalog.toml + manifest.toml
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
     commands/
       mod.rs
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-  storage/             // stub — page/file layout, on-disk IO (Stage 1+)
-    mod.rs
+      table_create.rs  // create a table from a schema DSL
+      table_list.rs    // list table names
+      table_describe.rs// print a table's schema and storage info
+      table_drop.rs    // remove a table
+  storage/             // storage trait + column-store implementation
+    mod.rs             // Storage trait, Rid, TableHandle, Record, Value
+    column_store.rs    // Track B implementation; delegates to Catalog
+    column_file.rs     // .col header format (Stage 1: header only)
+    delete_bitmap.rs   // per-row-group deletes.bm format (Stage 2 prep)
   parser/              // stub — SQL lexer/parser (later stage)
     mod.rs
   execution/           // stub — query planning and execution (later stage)

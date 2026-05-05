@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::schema::{Column, Schema};
-use crate::catalog::tables::{Catalog, DEFAULT_ROW_GROUP_SIZE, TableDescriptor, TableId, TableOptions};
+use crate::catalog::tables::{
+    Catalog, DEFAULT_ROW_GROUP_SIZE, TableDescriptor, TableId, TableOptions,
+};
 use crate::error::Error;
 use crate::storage::{Record, Rid, ScanIter, Storage, TableHandle, column_file, delete_bitmap};
 

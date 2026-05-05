@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::schema::{Column, ColumnType, Schema};
+use crate::checksum;
 use crate::error::Error;
 
 pub type TableId = u64;
@@ -115,8 +116,12 @@ impl Catalog {
             });
         }
         tracing::debug!(path = %path.display(), "loading catalog");
-        let content = fs::read_to_string(&path).map_err(|e| Error::io("read catalog.toml", e))?;
-        let file: CatalogFile = toml::from_str(&content)
+        let bytes = fs::read(&path).map_err(|e| Error::io("read catalog.toml", e))?;
+        let body = checksum::verify(&bytes)
+            .map_err(|e| Error::invalid_schema(format!("catalog.toml: {e}")))?;
+        let content = std::str::from_utf8(body)
+            .map_err(|_| Error::invalid_schema("catalog.toml is not valid UTF-8".to_string()))?;
+        let file: CatalogFile = toml::from_str(content)
             .map_err(|e| Error::invalid_schema(format!("catalog.toml: {e}")))?;
         if file.storage_track != STORAGE_TRACK {
             return Err(Error::invalid_schema(format!(
@@ -156,10 +161,11 @@ impl Catalog {
         };
         let serialized = toml::to_string(&file)
             .map_err(|e| Error::invalid_schema(format!("serialize catalog: {e}")))?;
+        let wrapped = checksum::wrap(serialized.as_bytes());
         let tmp_path = self.root.join(CATALOG_TMP_FILE);
         let final_path = self.root.join(CATALOG_FILE);
-        tracing::debug!(path = %tmp_path.display(), bytes = serialized.len(), "writing catalog tmp");
-        fs::write(&tmp_path, serialized).map_err(|e| Error::io("write catalog tmp", e))?;
+        tracing::debug!(path = %tmp_path.display(), bytes = wrapped.len(), "writing catalog tmp");
+        fs::write(&tmp_path, &wrapped).map_err(|e| Error::io("write catalog tmp", e))?;
         tracing::debug!(path = %tmp_path.display(), "fsync catalog tmp");
         fs::File::open(&tmp_path)
             .and_then(|f| f.sync_all())
@@ -215,9 +221,10 @@ impl Catalog {
         };
         let serialized = toml::to_string(&manifest)
             .map_err(|e| Error::invalid_schema(format!("serialize manifest: {e}")))?;
+        let wrapped = checksum::wrap(serialized.as_bytes());
         let manifest_path = dir_abs.join(MANIFEST_FILE);
-        tracing::debug!(path = %manifest_path.display(), bytes = serialized.len(), "writing manifest");
-        fs::write(&manifest_path, serialized).map_err(|e| Error::io("write manifest", e))?;
+        tracing::debug!(path = %manifest_path.display(), bytes = wrapped.len(), "writing manifest");
+        fs::write(&manifest_path, &wrapped).map_err(|e| Error::io("write manifest", e))?;
 
         self.tables.insert(
             name.to_string(),
@@ -273,9 +280,12 @@ impl Catalog {
             .ok_or_else(|| Error::no_such_table(name))?;
         let manifest_path = self.root.join(&entry.dir).join(MANIFEST_FILE);
         tracing::debug!(table = %name, path = %manifest_path.display(), "reading manifest");
-        let content =
-            fs::read_to_string(&manifest_path).map_err(|e| Error::io("read manifest.toml", e))?;
-        let manifest: ManifestFile = toml::from_str(&content)
+        let bytes = fs::read(&manifest_path).map_err(|e| Error::io("read manifest.toml", e))?;
+        let body = checksum::verify(&bytes)
+            .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
+        let content = std::str::from_utf8(body)
+            .map_err(|_| Error::invalid_schema("manifest.toml is not valid UTF-8".to_string()))?;
+        let manifest: ManifestFile = toml::from_str(content)
             .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
         let schema = Schema {
             columns: manifest
@@ -565,12 +575,58 @@ mod tests {
     #[test]
     fn load_rejects_wrong_storage_track() {
         let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("catalog.toml"),
-            "format_version = 1\nstorage_track = \"row-store\"\nnext_table_id = 1\n",
-        )
-        .unwrap();
+        // Wrap with a valid checksum so we exercise the storage_track guard,
+        // not the integrity guard.
+        let body = b"format_version = 1\nstorage_track = \"row-store\"\nnext_table_id = 1\n";
+        fs::write(tmp.path().join("catalog.toml"), checksum::wrap(body)).unwrap();
         let err = Catalog::load(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("storage_track"));
+    }
+
+    #[test]
+    fn load_detects_catalog_bit_flip() {
+        let tmp = TempDir::new().unwrap();
+        {
+            let mut cat = Catalog::load(tmp.path()).unwrap();
+            cat.create_table("users", schema_users(), TableOptions::default())
+                .unwrap();
+        }
+        // Flip a byte in the body. The leading checksum line stays put;
+        // verify() recomputes over the body and notices.
+        let path = tmp.path().join("catalog.toml");
+        let mut bytes = fs::read(&path).unwrap();
+        let target = bytes.len() - 5;
+        bytes[target] ^= 0x01;
+        fs::write(&path, &bytes).unwrap();
+
+        let err = Catalog::load(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("checksum"),
+            "expected checksum error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn describe_table_detects_manifest_bit_flip() {
+        let tmp = TempDir::new().unwrap();
+        let mut cat = Catalog::load(tmp.path()).unwrap();
+        cat.create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+
+        let path = tmp
+            .path()
+            .join("tables")
+            .join("00000001")
+            .join("manifest.toml");
+        let mut bytes = fs::read(&path).unwrap();
+        let target = bytes.len() - 5;
+        bytes[target] ^= 0x01;
+        fs::write(&path, &bytes).unwrap();
+
+        let err = cat.describe_table("users").unwrap_err();
+        assert!(
+            err.to_string().contains("checksum"),
+            "expected checksum error, got: {err}"
+        );
     }
 }

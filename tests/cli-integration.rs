@@ -409,7 +409,11 @@ fn table_create_writes_expected_layout() {
         1048,
         "deletes.bm should be 24-byte header + 1024 bytes of bitmap"
     );
-    assert_eq!(&bm_bytes[0..8], b"BALIKDEL", "deletes.bm should start with magic");
+    assert_eq!(
+        &bm_bytes[0..8],
+        b"BALIKDEL",
+        "deletes.bm should start with magic"
+    );
     assert!(
         bm_bytes[24..].iter().all(|&b| b == 0),
         "fresh deletes.bm should have every bit clear"

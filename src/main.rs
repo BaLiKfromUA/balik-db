@@ -1,4 +1,5 @@
 mod catalog;
+mod checksum;
 mod cli;
 mod error;
 mod storage;
