@@ -397,6 +397,23 @@ fn table_create_writes_expected_layout() {
         );
         assert_eq!(&bytes[0..8], b"BALIKCOL", "{col} should start with magic");
     }
+
+    // The row group's delete bitmap is also materialized at create time:
+    // 24-byte header + ceil(row_group_size / 8) bytes of zeroed bitmap.
+    // Default row_group_size = 8192, so 24 + 1024 = 1048 bytes.
+    let bm = rg0.join("deletes.bm");
+    assert!(bm.is_file(), "deletes.bm should exist in row group 0");
+    let bm_bytes = std::fs::read(&bm).unwrap();
+    assert_eq!(
+        bm_bytes.len(),
+        1048,
+        "deletes.bm should be 24-byte header + 1024 bytes of bitmap"
+    );
+    assert_eq!(&bm_bytes[0..8], b"BALIKDEL", "deletes.bm should start with magic");
+    assert!(
+        bm_bytes[24..].iter().all(|&b| b == 0),
+        "fresh deletes.bm should have every bit clear"
+    );
 }
 
 #[test]

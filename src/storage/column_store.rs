@@ -8,10 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::schema::{Column, Schema};
-use crate::catalog::tables::{Catalog, TableDescriptor, TableId, TableOptions};
+use crate::catalog::tables::{Catalog, DEFAULT_ROW_GROUP_SIZE, TableDescriptor, TableId, TableOptions};
 use crate::error::Error;
-use crate::storage::column_file;
-use crate::storage::{Record, Rid, Storage, TableHandle};
+use crate::storage::{Record, Rid, Storage, TableHandle, column_file, delete_bitmap};
 
 const ROW_GROUPS_DIR: &str = "row_groups";
 
@@ -22,13 +21,20 @@ fn row_group_dir(table_dir: &Path, group_id: u32) -> PathBuf {
         .join(format!("{group_id:06}"))
 }
 
-/// Create a row group directory with one empty `.col` file per column.
-fn materialize_row_group(rg_dir: &Path, columns: &[Column]) -> Result<(), Error> {
+/// Create a row group directory with one empty `.col` file per column plus
+/// the row group's `deletes.bm` bitmap, pre-sized for `row_group_size` rows.
+fn materialize_row_group(
+    rg_dir: &Path,
+    columns: &[Column],
+    row_group_size: u32,
+) -> Result<(), Error> {
     fs::create_dir_all(rg_dir).map_err(|e| Error::io("create row group dir", e))?;
     for col in columns {
         let col_path = rg_dir.join(format!("{}.col", col.name));
         column_file::write_empty(&col_path, col.ty)?;
     }
+    let bm_path = rg_dir.join(delete_bitmap::FILE_NAME);
+    delete_bitmap::write_empty(&bm_path, row_group_size)?;
     Ok(())
 }
 
@@ -86,10 +92,11 @@ impl Storage for ColumnStore {
         // specific and lives below this layer — keeps catalog usable for any
         // future track.
         let columns = schema.columns.clone();
+        let row_group_size = options.row_group_size.unwrap_or(DEFAULT_ROW_GROUP_SIZE);
         let id = self.catalog.create_table(name, schema, options)?;
         let table_dir = self.catalog.table_dir(name)?;
         let rg_dir = row_group_dir(&table_dir, 0);
-        if let Err(e) = materialize_row_group(&rg_dir, &columns) {
+        if let Err(e) = materialize_row_group(&rg_dir, &columns, row_group_size) {
             // Roll back the catalog publish so we don't leave a half-formed
             // table around. drop_table failure is logged inside the catalog.
             tracing::warn!(
@@ -269,6 +276,11 @@ mod tests {
         let name_h = column_file::read_header(&rg0.join("name.col")).unwrap();
         assert_eq!(name_h.logical_type, ColumnType::Text);
         assert_eq!(name_h.row_count, 0);
+
+        let bm_path = rg0.join(delete_bitmap::FILE_NAME);
+        assert!(bm_path.is_file(), "deletes.bm should be materialized");
+        let bm_h = delete_bitmap::read_header(&bm_path).unwrap();
+        assert_eq!(bm_h.deleted_count, 0);
     }
 
     #[test]

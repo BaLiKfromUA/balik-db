@@ -39,11 +39,11 @@ use std::path::Path;
 use crate::catalog::schema::ColumnType;
 use crate::error::Error;
 
-pub const HEADER_SIZE: usize = 56;
-pub const MAGIC: &[u8; 8] = b"BALIKCOL";
-pub const FORMAT_VERSION: u32 = 1;
+const HEADER_SIZE: usize = 56;
+const MAGIC: &[u8; 8] = b"BALIKCOL";
+const FORMAT_VERSION: u32 = 1;
 
-pub const FLAG_HAS_NULLS: u8 = 0b0000_0001;
+const FLAG_HAS_NULLS: u8 = 0b0000_0001;
 
 const LOGICAL_INT: u8 = 0;
 const LOGICAL_TEXT: u8 = 1;
@@ -84,7 +84,7 @@ fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
 }
 
 /// Build a 56-byte empty header for a new `.col` file of the given type.
-pub fn empty_header(ty: ColumnType) -> [u8; HEADER_SIZE] {
+fn empty_header(ty: ColumnType) -> [u8; HEADER_SIZE] {
     let mut buf = [0u8; HEADER_SIZE];
     buf[0..8].copy_from_slice(MAGIC);
     buf[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());

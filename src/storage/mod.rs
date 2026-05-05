@@ -20,6 +20,7 @@
 
 pub mod column_file;
 pub mod column_store;
+pub mod delete_bitmap;
 
 use std::path::PathBuf;
 
