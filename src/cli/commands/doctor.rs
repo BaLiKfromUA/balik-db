@@ -3,6 +3,8 @@ use std::path::Path;
 
 use crate::catalog::metadata::{self, Status};
 use crate::error::Error;
+use crate::storage::Storage;
+use crate::storage::column_store::ColumnStore;
 
 pub fn run(path: &Path) -> Result<(), Error> {
     let mut out = std::io::stdout();
@@ -20,8 +22,11 @@ fn diagnose(out: &mut impl Write, path: &Path) -> io::Result<bool> {
     print_version(out)?;
     print_os_info(out)?;
     let db_ok = check_database(out, path)?;
-
-    Ok(db_ok)
+    if !db_ok {
+        return Ok(false);
+    }
+    let catalog_ok = check_catalog(out, path)?;
+    Ok(db_ok && catalog_ok)
 }
 
 fn print_version(out: &mut impl Write) -> io::Result<()> {
@@ -91,6 +96,49 @@ fn check_database(out: &mut impl Write, path: &Path) -> io::Result<bool> {
             Ok(true)
         }
     }
+}
+
+fn check_catalog(out: &mut impl Write, db: &Path) -> io::Result<bool> {
+    let store = match ColumnStore::open(db) {
+        Ok(s) => s,
+        Err(e) => {
+            writeln!(out, "[!!] cannot open catalog: {e}")?;
+            return Ok(false);
+        }
+    };
+    let names = match store.list_tables() {
+        Ok(n) => n,
+        Err(e) => {
+            writeln!(out, "[!!] cannot list tables: {e}")?;
+            return Ok(false);
+        }
+    };
+    writeln!(out, "[ok] catalog: {} tables", names.len())?;
+
+    let mut all_ok = true;
+    for name in &names {
+        match store.describe_table(name) {
+            Ok(desc) => {
+                let cols = desc
+                    .schema
+                    .columns
+                    .iter()
+                    .map(|c| format!("{} {}", c.name, c.ty.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    out,
+                    "[ok] {name}: {} columns ({cols})",
+                    desc.schema.columns.len()
+                )?;
+            }
+            Err(e) => {
+                writeln!(out, "[!!] table '{name}': {e}")?;
+                all_ok = false;
+            }
+        }
+    }
+    Ok(all_ok)
 }
 
 #[cfg(test)]
@@ -185,5 +233,98 @@ mod tests {
             "format version: {}",
             crate::catalog::metadata::FORMAT_VERSION
         )));
+    }
+
+    /// Initialize a balik db at `tmp/testdb` and create a `users` table with
+    /// schema (id INT, name TEXT). Returns the db path.
+    fn setup_db_with_users(tmp: &TempDir) -> std::path::PathBuf {
+        use crate::catalog::schema::{Column, ColumnType, Schema};
+        use crate::catalog::tables::TableOptions;
+        use crate::storage::Storage;
+        use crate::storage::column_store::ColumnStore;
+
+        let db = tmp.path().join("testdb");
+        crate::catalog::metadata::initialize(&db).unwrap();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "users",
+                Schema {
+                    columns: vec![
+                        Column {
+                            name: "id".to_string(),
+                            ty: ColumnType::Int,
+                            nullable: false,
+                        },
+                        Column {
+                            name: "name".to_string(),
+                            ty: ColumnType::Text,
+                            nullable: false,
+                        },
+                    ],
+                },
+                TableOptions::default(),
+            )
+            .unwrap();
+        db
+    }
+
+    #[test]
+    fn doctor_reports_empty_catalog() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("testdb");
+        crate::catalog::metadata::initialize(&db_path).unwrap();
+
+        let (output, ok) = run_doctor(&db_path);
+
+        assert!(ok);
+        assert!(output.contains("[ok] catalog: 0 tables"));
+        assert!(!output.contains("[!!]"));
+    }
+
+    #[test]
+    fn doctor_reports_healthy_table() {
+        let tmp = TempDir::new().unwrap();
+        let db = setup_db_with_users(&tmp);
+
+        let (output, ok) = run_doctor(&db);
+
+        assert!(ok, "expected ok, got output:\n{output}");
+        assert!(output.contains("[ok] catalog: 1 tables"));
+        assert!(output.contains("[ok] users: 2 columns"));
+        assert!(output.contains("id INT"));
+        assert!(output.contains("name TEXT"));
+        assert!(!output.contains("[!!]"));
+    }
+
+    #[test]
+    fn doctor_detects_corrupt_catalog() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("testdb");
+        crate::catalog::metadata::initialize(&db_path).unwrap();
+        // Write garbage where catalog.toml lives.
+        std::fs::write(db_path.join("catalog.toml"), "not toml at all =====").unwrap();
+
+        let (output, ok) = run_doctor(&db_path);
+
+        assert!(!ok);
+        assert!(output.contains("[!!] cannot open catalog"));
+    }
+
+    #[test]
+    fn doctor_detects_corrupt_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let db = setup_db_with_users(&tmp);
+        // Stomp on the table's manifest.
+        std::fs::write(
+            db.join("tables").join("00000001").join("manifest.toml"),
+            "this is not toml",
+        )
+        .unwrap();
+
+        let (output, ok) = run_doctor(&db);
+
+        assert!(!ok);
+        assert!(output.contains("[!!] table 'users':"));
     }
 }

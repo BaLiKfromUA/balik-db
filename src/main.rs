@@ -1,6 +1,8 @@
 mod catalog;
+mod checksum;
 mod cli;
 mod error;
+mod storage;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -21,6 +23,22 @@ fn main() -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = match args.command {
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
+        cli::Command::TableCreate {
+            path,
+            table,
+            columns,
+            row_group_size,
+        } => cli::commands::table_create::run(&path, &table, &columns, row_group_size)
+            .map_err(Into::into),
+        cli::Command::TableList { path } => {
+            cli::commands::table_list::run(&path).map_err(Into::into)
+        }
+        cli::Command::TableDescribe { path, table } => {
+            cli::commands::table_describe::run(&path, &table).map_err(Into::into)
+        }
+        cli::Command::TableDrop { path, table } => {
+            cli::commands::table_drop::run(&path, &table).map_err(Into::into)
+        }
     };
 
     match result {
