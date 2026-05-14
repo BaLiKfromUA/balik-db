@@ -19,7 +19,7 @@ columns, which keeps the format easy to change.
   add an in-memory column-handle cache.
 - Updates and deletes are awkward in append-only column layouts. We've
   designed for them by leaving room (`flags.has_nulls`, `null_count`,
-  positional RIDs that survive deletes via a future delete bitmap)
+  positional RIDs that survive deletes via a separate delete bitmap)
 
 ## On-disk layout
 
