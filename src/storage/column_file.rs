@@ -1,7 +1,8 @@
 //! On-disk format for column data files (`.col`).
 //!
-//! Each `.col` file holds the values of one column for one row group.
-//! Stage 1 only materializes the header; the data area lands in Stage 2.
+//! Each `.col` file holds the values of one column for one row group: a
+//! fixed 56-byte header followed by the data area. The whole file is
+//! rewritten on every change, so the header counts always match the data.
 //!
 //! Byte layout (all multi-byte integers little-endian):
 //!
@@ -11,33 +12,41 @@
 //! 0       8     magic              ASCII "BALIKCOL"
 //! 8       4     format_version     u32 = 1
 //! 12      1     logical_type       0=INT, 1=TEXT
-//! 13      1     physical_encoding  0=raw (only encoding defined for now)
+//! 13      1     physical_encoding  0=raw, 1=dictionary (TEXT only)
 //! 14      1     flags              bit 0 = has_nulls; bits 1-7 reserved
 //! 15      1     reserved
 //! 16      4     row_count          u32 — rows in this file, including NULLs
 //! 20      4     null_count         u32 — number of NULL rows
-//! 24      16    min                zeroed until row group seals
-//! 40      16    max                zeroed until row group seals
-//! 56      ...   data area          Stage 2+
+//! 24      16    min                reserved, zeroed
+//! 40      16    max                reserved, zeroed
+//! 56      ...   data area          presence bitmap (if any) + encoded values
 //! ```
 //!
-//! The 56-byte header is 8-byte aligned so the future data area can be
-//! aligned for SIMD or memcpy paths.
+//! The 56-byte header is 8-byte aligned so the data area can be aligned for
+//! SIMD or memcpy paths.
 //!
-//! ## NULL handling (planned for Stage 2)
+//! ## Data area
 //!
-//! When `flags.has_nulls = 1`, the data area begins with a NULL bitmap
-//! sized `ceil(row_count / 8)` bytes (1 = present, 0 = NULL), followed by
-//! the per-encoding values. When `flags.has_nulls = 0`, no bitmap is
-//! emitted even on nullable columns — saves a decode pass when no NULLs
-//! have been written. `null_count` always reflects truth and can be used
-//! for fast pruning regardless of the flag.
+//! When `flags.has_nulls = 1`, the data area begins with a presence bitmap
+//! sized `ceil(row_count / 8)` bytes (bit i: 1 = present, 0 = NULL), followed
+//! by the encoded values. When `flags.has_nulls = 0`, no bitmap is emitted —
+//! saving a decode pass when nothing is NULL. `null_count` always reflects
+//! truth regardless of the flag.
+//!
+//! Raw encodings (`physical_encoding = 0`):
+//!
+//! - **INT**: `row_count` little-endian `i64`s; NULL rows store a `0`
+//!   placeholder masked by the presence bitmap, keeping `offset = row * 8`.
+//! - **TEXT**: `row_count` little-endian `u32` end-offsets, then the
+//!   concatenated UTF-8 blob. Value `i` is `blob[end[i-1]..end[i]]` with
+//!   `end[-1] = 0`; NULL rows are zero-length.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::catalog::schema::ColumnType;
 use crate::error::Error;
+use crate::storage::Value;
 
 const HEADER_SIZE: usize = 56;
 const MAGIC: &[u8; 8] = b"BALIKCOL";
@@ -52,8 +61,6 @@ const LOGICAL_TEXT: u8 = 1;
 const PHYSICAL_RAW: u8 = 0;
 
 /// Parsed view of a `.col` header.
-// Stage 2: read_header returns this; Stage 1 only constructs it inside tests
-// so dead-code analysis doesn't see a production caller.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -68,8 +75,7 @@ pub struct Header {
 }
 
 impl Header {
-    // Stage 2: the scan path branches on this. Stage 1 only checks it in
-    // tests pinning the `flags` byte layout.
+    /// True when the data area carries a presence bitmap (some row is NULL).
     #[allow(dead_code)]
     pub fn has_nulls(&self) -> bool {
         self.flags & FLAG_HAS_NULLS != 0
@@ -83,7 +89,6 @@ fn logical_type_byte(ty: ColumnType) -> u8 {
     }
 }
 
-// Stage 2: called from read_header on the scan path; Stage 1 has no caller.
 #[allow(dead_code)]
 fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
     match b {
@@ -115,11 +120,10 @@ pub fn write_empty(path: &Path, ty: ColumnType) -> Result<(), Error> {
     fs::write(path, empty_header(ty)).map_err(|e| Error::io("write column file", e))
 }
 
-/// Parse the header of an existing `.col` file. Used by tests today; will
-/// be the entry point for scan/skip-pruning in Stage 2.
+/// Parse a `.col` header from the leading bytes of a file image, validating
+/// magic and format version.
 #[allow(dead_code)]
-pub fn read_header(path: &Path) -> Result<Header, Error> {
-    let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
+fn parse_header(bytes: &[u8], path: &Path) -> Result<Header, Error> {
     if bytes.len() < HEADER_SIZE {
         return Err(Error(format!(
             "column file '{}' shorter than {HEADER_SIZE}-byte header",
@@ -158,6 +162,212 @@ pub fn read_header(path: &Path) -> Result<Header, Error> {
         min,
         max,
     })
+}
+
+/// Read and parse just the header of an existing `.col` file.
+#[allow(dead_code)]
+pub fn read_header(path: &Path) -> Result<Header, Error> {
+    let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
+    parse_header(&bytes, path)
+}
+
+// ---- data-area codec ----
+
+/// Presence bitmap for `values`: bit i set (LSB-first within each byte) when
+/// row i is non-NULL. Written ahead of the data when a column has any NULL.
+#[allow(dead_code)]
+fn build_present_bitmap(values: &[Value]) -> Vec<u8> {
+    let mut bm = vec![0u8; values.len().div_ceil(8)];
+    for (i, v) in values.iter().enumerate() {
+        if !matches!(v, Value::Null) {
+            bm[i / 8] |= 1 << (i % 8);
+        }
+    }
+    bm
+}
+
+/// Whether row i is present (non-NULL). `None` bitmap means no NULLs at all.
+#[allow(dead_code)]
+fn is_present(present: Option<&[u8]>, i: usize) -> bool {
+    match present {
+        None => true,
+        Some(bm) => bm[i / 8] & (1 << (i % 8)) != 0,
+    }
+}
+
+#[allow(dead_code)]
+fn encode_int_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::with_capacity(values.len() * 8);
+    for v in values {
+        let n = match v {
+            Value::Int(n) => *n,
+            Value::Null => 0,
+            Value::Text(_) => return Err(Error("INT column received a TEXT value".to_string())),
+        };
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    Ok(out)
+}
+
+#[allow(dead_code)]
+fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
+    let mut offsets = Vec::with_capacity(values.len() * 4);
+    let mut blob = Vec::new();
+    for v in values {
+        match v {
+            Value::Text(s) => blob.extend_from_slice(s.as_bytes()),
+            Value::Null => {}
+            Value::Int(_) => return Err(Error("TEXT column received an INT value".to_string())),
+        }
+        let end = u32::try_from(blob.len())
+            .map_err(|_| Error("TEXT column exceeds the 4 GiB limit".to_string()))?;
+        offsets.extend_from_slice(&end.to_le_bytes());
+    }
+    offsets.extend_from_slice(&blob);
+    Ok(offsets)
+}
+
+/// Build the whole byte image (header + data area) for a column of `values`.
+#[allow(dead_code)]
+fn encode_column(ty: ColumnType, values: &[Value]) -> Result<Vec<u8>, Error> {
+    let row_count = u32::try_from(values.len())
+        .map_err(|_| Error("row group exceeds the u32 row-count limit".to_string()))?;
+    let null_count = values.iter().filter(|v| matches!(v, Value::Null)).count() as u32;
+    let has_nulls = null_count > 0;
+
+    let mut buf = empty_header(ty).to_vec();
+    if has_nulls {
+        buf[14] = FLAG_HAS_NULLS;
+    }
+    buf[16..20].copy_from_slice(&row_count.to_le_bytes());
+    buf[20..24].copy_from_slice(&null_count.to_le_bytes());
+
+    if has_nulls {
+        buf.extend_from_slice(&build_present_bitmap(values));
+    }
+    let data = match ty {
+        ColumnType::Int => encode_int_raw(values)?,
+        ColumnType::Text => encode_text_raw(values)?,
+    };
+    buf.extend_from_slice(&data);
+    Ok(buf)
+}
+
+#[allow(dead_code)]
+fn decode_int_raw(
+    data: &[u8],
+    row_count: usize,
+    present: Option<&[u8]>,
+    path: &Path,
+) -> Result<Vec<Value>, Error> {
+    if data.len() < row_count * 8 {
+        return Err(Error(format!(
+            "column file '{}' INT data is truncated",
+            path.display()
+        )));
+    }
+    let mut out = Vec::with_capacity(row_count);
+    for i in 0..row_count {
+        if is_present(present, i) {
+            let bytes = data[i * 8..i * 8 + 8].try_into().unwrap();
+            out.push(Value::Int(i64::from_le_bytes(bytes)));
+        } else {
+            out.push(Value::Null);
+        }
+    }
+    Ok(out)
+}
+
+#[allow(dead_code)]
+fn decode_text_raw(
+    data: &[u8],
+    row_count: usize,
+    present: Option<&[u8]>,
+    path: &Path,
+) -> Result<Vec<Value>, Error> {
+    let offs_len = row_count * 4;
+    if data.len() < offs_len {
+        return Err(Error(format!(
+            "column file '{}' TEXT offsets are truncated",
+            path.display()
+        )));
+    }
+    let blob = &data[offs_len..];
+    let mut out = Vec::with_capacity(row_count);
+    let mut start = 0usize;
+    for i in 0..row_count {
+        let end = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+        if end < start || end > blob.len() {
+            return Err(Error(format!(
+                "column file '{}' has an out-of-range TEXT offset",
+                path.display()
+            )));
+        }
+        if is_present(present, i) {
+            let s = std::str::from_utf8(&blob[start..end])
+                .map_err(|_| Error(format!("column file '{}' has invalid UTF-8", path.display())))?
+                .to_string();
+            out.push(Value::Text(s));
+        } else {
+            out.push(Value::Null);
+        }
+        start = end;
+    }
+    Ok(out)
+}
+
+/// Encode `values` for a column of type `ty` and replace the `.col` file at
+/// `path` atomically: write a sibling temp file, fsync it, then rename it
+/// into place so a crash leaves either the old image or the new one.
+#[allow(dead_code)]
+pub fn write_column(path: &Path, ty: ColumnType, values: &[Value]) -> Result<(), Error> {
+    tracing::debug!(path = %path.display(), rows = values.len(), "writing column file");
+    let bytes = encode_column(ty, values)?;
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, &bytes).map_err(|e| Error::io("write column tmp", e))?;
+    fs::File::open(&tmp)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| Error::io("fsync column tmp", e))?;
+    fs::rename(&tmp, path).map_err(|e| Error::io("rename column", e))?;
+    Ok(())
+}
+
+/// Read and decode every value in a `.col` file, in row order. NULL rows
+/// decode to `Value::Null`. Corrupt or truncated files return `Err` so the
+/// scan path never yields garbage.
+#[allow(dead_code)]
+pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
+    let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
+    let header = parse_header(&bytes, path)?;
+    let row_count = header.row_count as usize;
+    let data = &bytes[HEADER_SIZE..];
+
+    let (present, data) = if header.has_nulls() {
+        let bm_len = row_count.div_ceil(8);
+        if data.len() < bm_len {
+            return Err(Error(format!(
+                "column file '{}' presence bitmap is truncated",
+                path.display()
+            )));
+        }
+        (Some(&data[..bm_len]), &data[bm_len..])
+    } else {
+        (None, data)
+    };
+
+    if header.physical_encoding != PHYSICAL_RAW {
+        return Err(Error(format!(
+            "column file '{}' uses unsupported physical encoding {}",
+            path.display(),
+            header.physical_encoding
+        )));
+    }
+    match header.logical_type {
+        ColumnType::Int => decode_int_raw(data, row_count, present, path),
+        ColumnType::Text => decode_text_raw(data, row_count, present, path),
+    }
 }
 
 #[cfg(test)]
@@ -287,5 +497,81 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         let err = read_header(&path).unwrap_err();
         assert!(err.to_string().contains("unknown logical type"));
+    }
+
+    fn roundtrip(ty: ColumnType, values: &[Value]) -> Vec<Value> {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.col");
+        write_column(&path, ty, values).unwrap();
+        read_column(&path).unwrap()
+    }
+
+    #[test]
+    fn int_round_trips_without_nulls() {
+        let values = vec![Value::Int(1), Value::Int(-42), Value::Int(i64::MAX)];
+        assert_eq!(roundtrip(ColumnType::Int, &values), values);
+    }
+
+    #[test]
+    fn int_round_trips_with_nulls() {
+        let values = vec![Value::Int(7), Value::Null, Value::Int(9), Value::Null];
+        assert_eq!(roundtrip(ColumnType::Int, &values), values);
+
+        // The presence bitmap is materialized: flag set, null_count correct.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.col");
+        write_column(&path, ColumnType::Int, &values).unwrap();
+        let h = read_header(&path).unwrap();
+        assert!(h.has_nulls());
+        assert_eq!(h.row_count, 4);
+        assert_eq!(h.null_count, 2);
+    }
+
+    #[test]
+    fn text_round_trips_with_nulls_and_duplicates() {
+        let values = vec![
+            Value::Text("alice".to_string()),
+            Value::Null,
+            Value::Text(String::new()), // empty string is distinct from NULL
+            Value::Text("alice".to_string()),
+        ];
+        assert_eq!(roundtrip(ColumnType::Text, &values), values);
+    }
+
+    #[test]
+    fn empty_and_all_null_columns_round_trip() {
+        assert_eq!(roundtrip(ColumnType::Int, &[]), Vec::<Value>::new());
+        let all_null = vec![Value::Null, Value::Null];
+        assert_eq!(roundtrip(ColumnType::Text, &all_null), all_null);
+    }
+
+    #[test]
+    fn no_nulls_means_no_presence_bitmap() {
+        // 3 INT rows, no NULLs: 56-byte header + 3 * 8 bytes, no bitmap.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.col");
+        write_column(&path, ColumnType::Int, &[Value::Int(1), Value::Int(2), Value::Int(3)])
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap().len(), HEADER_SIZE + 24);
+    }
+
+    #[test]
+    fn write_column_rejects_value_of_wrong_type() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.col");
+        let err = write_column(&path, ColumnType::Int, &[Value::Text("x".to_string())]).unwrap_err();
+        assert!(err.to_string().contains("INT column received a TEXT"));
+    }
+
+    #[test]
+    fn read_column_rejects_truncated_data() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.col");
+        write_column(&path, ColumnType::Int, &[Value::Int(1), Value::Int(2)]).unwrap();
+        // Lop off the last value's bytes; the header still claims 2 rows.
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.truncate(bytes.len() - 8);
+        fs::write(&path, bytes).unwrap();
+        assert!(read_column(&path).unwrap_err().to_string().contains("truncated"));
     }
 }
