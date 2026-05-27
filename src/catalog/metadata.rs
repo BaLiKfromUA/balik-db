@@ -3,6 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::checksum;
 use crate::error::Error;
 
 const METADATA_FILE: &str = "balik.meta";
@@ -23,7 +24,7 @@ struct Metadata {
 pub enum Status {
     /// Directory has no `balik.meta` file.
     Missing,
-    /// `balik.meta` exists but could not be parsed.
+    /// `balik.meta` exists but failed checksum verification or could not be parsed.
     Unreadable,
     /// Parsed successfully but magic marker does not match.
     WrongMagic,
@@ -38,10 +39,18 @@ pub enum Status {
 
 pub fn status(path: &Path) -> Status {
     let meta_path = path.join(METADATA_FILE);
-    let Ok(content) = fs::read_to_string(&meta_path) else {
+    let Ok(bytes) = fs::read(&meta_path) else {
         return Status::Missing;
     };
-    let Ok(meta) = toml::from_str::<Metadata>(&content) else {
+    // A missing wrapper or a checksum mismatch means the file is corrupt or
+    // was not written by us — both are unreadable.
+    let Ok(body) = checksum::verify(&bytes) else {
+        return Status::Unreadable;
+    };
+    let Ok(content) = std::str::from_utf8(body) else {
+        return Status::Unreadable;
+    };
+    let Ok(meta) = toml::from_str::<Metadata>(content) else {
         return Status::Unreadable;
     };
     if meta.magic != MAGIC {
@@ -89,11 +98,11 @@ pub fn initialize(path: &Path) -> Result<(), Error> {
     };
     let serialized =
         toml::to_string(&meta).map_err(|e| Error(format!("failed to serialize metadata: {e}")))?;
+    let wrapped = checksum::wrap(serialized.as_bytes());
 
     let meta_path = path.join(METADATA_FILE);
     tracing::debug!(path = %meta_path.display(), "writing metadata file");
-    fs::write(&meta_path, serialized)
-        .map_err(|e| Error(format!("failed to write metadata: {e}")))?;
+    fs::write(&meta_path, wrapped).map_err(|e| Error(format!("failed to write metadata: {e}")))?;
 
     tracing::info!(path = %path.display(), "database initialized");
     Ok(())
@@ -112,6 +121,7 @@ fn timestamp() -> String {
 mod tests {
     use super::{METADATA_FILE, Status, initialize, status};
 
+    use crate::checksum;
     use std::fs;
     use tempfile::TempDir;
 
@@ -154,11 +164,8 @@ mod tests {
         let db_path = tmp.path().join("testdb");
         fs::create_dir(&db_path).unwrap();
         let future = super::FORMAT_VERSION + 1;
-        fs::write(
-            db_path.join(METADATA_FILE),
-            format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n"),
-        )
-        .unwrap();
+        let body = format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n");
+        fs::write(db_path.join(METADATA_FILE), checksum::wrap(body.as_bytes())).unwrap();
 
         // Then
         assert!(matches!(
@@ -196,7 +203,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("testdb");
         fs::create_dir(&db_path).unwrap();
-        fs::write(db_path.join(METADATA_FILE), "version = \"0.0.0\"\n").unwrap();
+        // Valid checksum, but the body lacks the required fields.
+        fs::write(
+            db_path.join(METADATA_FILE),
+            checksum::wrap(b"version = \"0.0.0\"\n"),
+        )
+        .unwrap();
 
         // Then: cannot be parsed into our Metadata shape → Unreadable
         assert!(matches!(status(&db_path), Status::Unreadable));
@@ -209,11 +221,34 @@ mod tests {
         fs::create_dir(&db_path).unwrap();
         fs::write(
             db_path.join(METADATA_FILE),
-            "magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n",
+            checksum::wrap(b"magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n"),
         )
         .unwrap();
 
         assert!(matches!(status(&db_path), Status::WrongMagic));
+    }
+
+    #[test]
+    fn initialized_meta_is_checksum_wrapped() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("testdb");
+        initialize(&db_path).unwrap();
+        let raw = fs::read_to_string(db_path.join(METADATA_FILE)).unwrap();
+        assert!(raw.starts_with("# crc32 = 0x"));
+    }
+
+    #[test]
+    fn corrupt_meta_checksum_is_unreadable() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("testdb");
+        initialize(&db_path).unwrap();
+        // Flip a byte in the body so it no longer matches the checksum line.
+        let path = db_path.join(METADATA_FILE);
+        let mut bytes = fs::read(&path).unwrap();
+        let target = bytes.len() - 3;
+        bytes[target] ^= 0x01;
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(status(&db_path), Status::Unreadable));
     }
 
     #[test]

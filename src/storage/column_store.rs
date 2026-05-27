@@ -312,7 +312,7 @@ mod tests {
         std::fs::create_dir(&db).unwrap();
         std::fs::write(
             db.join("balik.meta"),
-            "magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n",
+            crate::checksum::wrap(b"magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n"),
         )
         .unwrap();
         let err = ColumnStore::open(&db).unwrap_err();

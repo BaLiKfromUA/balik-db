@@ -45,16 +45,20 @@ N `.col` files and one `deletes.bm` per row group per table.
 
 ### `balik.meta` — database bootstrap
 
-TOML, written once by `init`. Source of truth for "is this a balik database?".
+TOML, written once by `init`, wrapped with a leading
+[checksum line](#toml-file-integrity-catalogtoml-manifesttoml). Source of
+truth for "is this a balik database?".
 
 ```toml
+# crc32 = 0xdeadbeef
 magic = "balik-db"
 format_version = 1
 created = "unix:1772345678"
 ```
 
 Read by `metadata::status` which is the gate function used by
-`ColumnStore::open` to refuse to operate on uninitialized directories.
+`ColumnStore::open` to refuse to operate on uninitialized directories. A
+checksum mismatch (or a missing wrapper) surfaces as `Status::Unreadable`.
 
 
 ### TOML file integrity (`catalog.toml`, `manifest.toml`)
@@ -83,9 +87,7 @@ formats. It catches bit rot and accidental tampering; it is **not** a
 cryptographic hash. The bitwise implementation in `src/checksum.rs` keeps
 the dep tree empty and is fast enough for files at our scale (KB at most).
 
-`balik.meta` is not currently wrapped — it's tiny, written once at `init`,
-and validated by structure already (magic + version). Adding checksum
-coverage there is a future cleanup if real corruption shows up.
+`balik.meta` is wrapped the same way. It's tiny and written once at `init`.
 
 ### `catalog.toml` — table index
 
