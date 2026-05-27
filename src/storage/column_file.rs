@@ -61,7 +61,6 @@ const LOGICAL_TEXT: u8 = 1;
 const PHYSICAL_RAW: u8 = 0;
 
 /// Parsed view of a `.col` header.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub format_version: u32,
@@ -76,7 +75,6 @@ pub struct Header {
 
 impl Header {
     /// True when the data area carries a presence bitmap (some row is NULL).
-    #[allow(dead_code)]
     pub fn has_nulls(&self) -> bool {
         self.flags & FLAG_HAS_NULLS != 0
     }
@@ -89,7 +87,6 @@ fn logical_type_byte(ty: ColumnType) -> u8 {
     }
 }
 
-#[allow(dead_code)]
 fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
     match b {
         LOGICAL_INT => Ok(ColumnType::Int),
@@ -122,7 +119,6 @@ pub fn write_empty(path: &Path, ty: ColumnType) -> Result<(), Error> {
 
 /// Parse a `.col` header from the leading bytes of a file image, validating
 /// magic and format version.
-#[allow(dead_code)]
 fn parse_header(bytes: &[u8], path: &Path) -> Result<Header, Error> {
     if bytes.len() < HEADER_SIZE {
         return Err(Error(format!(
@@ -175,7 +171,6 @@ pub fn read_header(path: &Path) -> Result<Header, Error> {
 
 /// Presence bitmap for `values`: bit i set (LSB-first within each byte) when
 /// row i is non-NULL. Written ahead of the data when a column has any NULL.
-#[allow(dead_code)]
 fn build_present_bitmap(values: &[Value]) -> Vec<u8> {
     let mut bm = vec![0u8; values.len().div_ceil(8)];
     for (i, v) in values.iter().enumerate() {
@@ -187,7 +182,6 @@ fn build_present_bitmap(values: &[Value]) -> Vec<u8> {
 }
 
 /// Whether row i is present (non-NULL). `None` bitmap means no NULLs at all.
-#[allow(dead_code)]
 fn is_present(present: Option<&[u8]>, i: usize) -> bool {
     match present {
         None => true,
@@ -195,7 +189,6 @@ fn is_present(present: Option<&[u8]>, i: usize) -> bool {
     }
 }
 
-#[allow(dead_code)]
 fn encode_int_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
     let mut out = Vec::with_capacity(values.len() * 8);
     for v in values {
@@ -209,7 +202,6 @@ fn encode_int_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-#[allow(dead_code)]
 fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
     let mut offsets = Vec::with_capacity(values.len() * 4);
     let mut blob = Vec::new();
@@ -228,7 +220,6 @@ fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
 }
 
 /// Build the whole byte image (header + data area) for a column of `values`.
-#[allow(dead_code)]
 fn encode_column(ty: ColumnType, values: &[Value]) -> Result<Vec<u8>, Error> {
     let row_count = u32::try_from(values.len())
         .map_err(|_| Error("row group exceeds the u32 row-count limit".to_string()))?;
@@ -253,7 +244,6 @@ fn encode_column(ty: ColumnType, values: &[Value]) -> Result<Vec<u8>, Error> {
     Ok(buf)
 }
 
-#[allow(dead_code)]
 fn decode_int_raw(
     data: &[u8],
     row_count: usize,
@@ -278,7 +268,6 @@ fn decode_int_raw(
     Ok(out)
 }
 
-#[allow(dead_code)]
 fn decode_text_raw(
     data: &[u8],
     row_count: usize,
@@ -319,7 +308,6 @@ fn decode_text_raw(
 /// Encode `values` for a column of type `ty` and replace the `.col` file at
 /// `path` atomically: write a sibling temp file, fsync it, then rename it
 /// into place so a crash leaves either the old image or the new one.
-#[allow(dead_code)]
 pub fn write_column(path: &Path, ty: ColumnType, values: &[Value]) -> Result<(), Error> {
     tracing::debug!(path = %path.display(), rows = values.len(), "writing column file");
     let bytes = encode_column(ty, values)?;
@@ -337,7 +325,6 @@ pub fn write_column(path: &Path, ty: ColumnType, values: &[Value]) -> Result<(),
 /// Read and decode every value in a `.col` file, in row order. NULL rows
 /// decode to `Value::Null`. Corrupt or truncated files return `Err` so the
 /// scan path never yields garbage.
-#[allow(dead_code)]
 pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
     let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
     let header = parse_header(&bytes, path)?;

@@ -71,7 +71,8 @@ impl Schema {
 
     /// Parse the CLI `--columns "id:INT,name:TEXT"` mini-DSL.
     /// Whitespace around tokens is ignored. Trailing commas and empty entries
-    /// are rejected.
+    /// are rejected. A `?` after the type marks the column nullable, e.g.
+    /// `name:TEXT?`; without it the column is NOT NULL.
     pub fn parse_columns_dsl(s: &str) -> Result<Self, Error> {
         tracing::debug!(input = %s, "parsing columns DSL");
         if s.trim().is_empty() {
@@ -96,11 +97,16 @@ impl Schema {
                     "column entry '{trimmed}' has no name"
                 )));
             }
-            let ty = ColumnType::parse(ty_str)?;
+            // A trailing `?` on the type marks the column nullable.
+            let (ty_token, nullable) = match ty_str.trim().strip_suffix('?') {
+                Some(rest) => (rest.trim(), true),
+                None => (ty_str.trim(), false),
+            };
+            let ty = ColumnType::parse(ty_token)?;
             columns.push(Column {
                 name: name.to_string(),
                 ty,
-                nullable: false,
+                nullable,
             });
         }
         tracing::debug!(parsed_columns = columns.len(), "columns DSL parsed");
@@ -296,5 +302,23 @@ mod tests {
     fn dsl_rejects_unknown_type() {
         let err = Schema::parse_columns_dsl("id:BLOB").unwrap_err();
         assert!(err.to_string().contains("unsupported column type"));
+    }
+
+    #[test]
+    fn dsl_marks_nullable_with_question_mark() {
+        let schema = Schema::parse_columns_dsl("id:INT,name:TEXT?").unwrap();
+        assert_eq!(
+            schema.columns,
+            vec![
+                col("id", ColumnType::Int, false),
+                col("name", ColumnType::Text, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn dsl_nullable_tolerates_whitespace_around_marker() {
+        let schema = Schema::parse_columns_dsl("name : TEXT ? ").unwrap();
+        assert_eq!(schema.columns, vec![col("name", ColumnType::Text, true)]);
     }
 }

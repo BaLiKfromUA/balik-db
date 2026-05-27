@@ -47,11 +47,10 @@ pub struct TableDescriptor {
     pub schema: Schema,
     pub row_group_size: u32,
     pub storage_track: String,
-    // Stage 2: open_table forwards this into TableHandle for the scan path.
-    #[allow(dead_code)]
+    /// Absolute path to the table directory. `open_table` forwards this into
+    /// the `TableHandle` so the data plane can locate row-group files.
     pub dir: PathBuf,
-    // Stage 2: insert reads/advances this; Stage 1 just persists it as 0.
-    #[allow(dead_code)]
+    /// Next record id to assign. The insert path reads and advances this.
     pub next_rid: u64,
 }
 
@@ -219,12 +218,9 @@ impl Catalog {
                 })
                 .collect(),
         };
-        let serialized = toml::to_string(&manifest)
-            .map_err(|e| Error::invalid_schema(format!("serialize manifest: {e}")))?;
-        let wrapped = checksum::wrap(serialized.as_bytes());
         let manifest_path = dir_abs.join(MANIFEST_FILE);
-        tracing::debug!(path = %manifest_path.display(), bytes = wrapped.len(), "writing manifest");
-        fs::write(&manifest_path, &wrapped).map_err(|e| Error::io("write manifest", e))?;
+        tracing::debug!(path = %manifest_path.display(), "writing manifest");
+        Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
         self.tables.insert(
             name.to_string(),
@@ -273,20 +269,51 @@ impl Catalog {
         Ok(self.root.join(&entry.dir))
     }
 
+    /// Absolute path to a table's manifest file.
+    fn manifest_path(&self, name: &str) -> Result<PathBuf, Error> {
+        let entry = self
+            .tables
+            .get(name)
+            .ok_or_else(|| Error::no_such_table(name))?;
+        Ok(self.root.join(&entry.dir).join(MANIFEST_FILE))
+    }
+
+    /// Read and verify a table's manifest from disk.
+    fn read_manifest(&self, name: &str) -> Result<ManifestFile, Error> {
+        let path = self.manifest_path(name)?;
+        tracing::debug!(table = %name, path = %path.display(), "reading manifest");
+        let bytes = fs::read(&path).map_err(|e| Error::io("read manifest.toml", e))?;
+        let body = checksum::verify(&bytes)
+            .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
+        let content = std::str::from_utf8(body)
+            .map_err(|_| Error::invalid_schema("manifest.toml is not valid UTF-8".to_string()))?;
+        toml::from_str(content).map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))
+    }
+
+    /// Serialize `manifest` and replace its file atomically: write a sibling
+    /// temp file, fsync it, then rename it into place.
+    fn write_manifest_atomic(path: &Path, manifest: &ManifestFile) -> Result<(), Error> {
+        let serialized = toml::to_string(manifest)
+            .map_err(|e| Error::invalid_schema(format!("serialize manifest: {e}")))?;
+        let wrapped = checksum::wrap(serialized.as_bytes());
+        let mut tmp = path.as_os_str().to_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        fs::write(&tmp, &wrapped).map_err(|e| Error::io("write manifest tmp", e))?;
+        fs::File::open(&tmp)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| Error::io("fsync manifest tmp", e))?;
+        fs::rename(&tmp, path).map_err(|e| Error::io("rename manifest", e))?;
+        Ok(())
+    }
+
     pub fn describe_table(&self, name: &str) -> Result<TableDescriptor, Error> {
         let entry = self
             .tables
             .get(name)
             .ok_or_else(|| Error::no_such_table(name))?;
-        let manifest_path = self.root.join(&entry.dir).join(MANIFEST_FILE);
-        tracing::debug!(table = %name, path = %manifest_path.display(), "reading manifest");
-        let bytes = fs::read(&manifest_path).map_err(|e| Error::io("read manifest.toml", e))?;
-        let body = checksum::verify(&bytes)
-            .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
-        let content = std::str::from_utf8(body)
-            .map_err(|_| Error::invalid_schema("manifest.toml is not valid UTF-8".to_string()))?;
-        let manifest: ManifestFile = toml::from_str(content)
-            .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
+        let dir = self.root.join(&entry.dir);
+        let manifest = self.read_manifest(name)?;
         let schema = Schema {
             columns: manifest
                 .columns
@@ -304,17 +331,22 @@ impl Catalog {
             schema,
             row_group_size: manifest.row_group_size,
             storage_track: manifest.storage_track,
-            dir: self.root.join(&entry.dir),
+            dir,
             next_rid: manifest.next_rid,
         })
     }
 
-    /// At the catalog level, opening is the same as describing; later stages
-    /// may extend `TableDescriptor` with cached file handles or row-group
-    /// indexes.
-    // Stage 2: ColumnStore::open_table forwards into this. Stage 1 has no
-    // production caller.
-    #[allow(dead_code)]
+    /// Persist a table's `next_rid` by rewriting its manifest atomically.
+    /// Called by the insert path after a row's column data is durable.
+    pub fn set_next_rid(&self, name: &str, next_rid: u64) -> Result<(), Error> {
+        let mut manifest = self.read_manifest(name)?;
+        manifest.next_rid = next_rid;
+        let path = self.manifest_path(name)?;
+        Self::write_manifest_atomic(&path, &manifest)
+    }
+
+    /// At the catalog level, opening is the same as describing; it may later
+    /// grow to cache file handles or row-group indexes on the descriptor.
     pub fn open_table(&self, name: &str) -> Result<TableDescriptor, Error> {
         self.describe_table(name)
     }
@@ -628,5 +660,27 @@ mod tests {
             err.to_string().contains("checksum"),
             "expected checksum error, got: {err}"
         );
+    }
+
+    #[test]
+    fn set_next_rid_persists_across_reopen() {
+        let tmp = TempDir::new().unwrap();
+        {
+            let mut cat = Catalog::load(tmp.path()).unwrap();
+            cat.create_table("users", schema_users(), TableOptions::default())
+                .unwrap();
+            cat.set_next_rid("users", 5).unwrap();
+            assert_eq!(cat.describe_table("users").unwrap().next_rid, 5);
+        }
+        let cat = Catalog::load(tmp.path()).unwrap();
+        assert_eq!(cat.describe_table("users").unwrap().next_rid, 5);
+    }
+
+    #[test]
+    fn set_next_rid_on_unknown_table_fails() {
+        let tmp = TempDir::new().unwrap();
+        let cat = Catalog::load(tmp.path()).unwrap();
+        let err = cat.set_next_rid("ghosts", 1).unwrap_err();
+        assert!(err.to_string().contains("no such table"));
     }
 }
