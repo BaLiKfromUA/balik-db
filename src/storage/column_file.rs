@@ -42,10 +42,11 @@
 //!   `end[-1] = 0`; NULL rows are zero-length.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::catalog::schema::ColumnType;
 use crate::error::Error;
+use crate::fs_atomic;
 use crate::storage::Value;
 
 const HEADER_SIZE: usize = 56;
@@ -311,15 +312,7 @@ fn decode_text_raw(
 pub fn write_column(path: &Path, ty: ColumnType, values: &[Value]) -> Result<(), Error> {
     tracing::debug!(path = %path.display(), rows = values.len(), "writing column file");
     let bytes = encode_column(ty, values)?;
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, &bytes).map_err(|e| Error::io("write column tmp", e))?;
-    fs::File::open(&tmp)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| Error::io("fsync column tmp", e))?;
-    fs::rename(&tmp, path).map_err(|e| Error::io("rename column", e))?;
-    Ok(())
+    fs_atomic::write(path, &bytes, "column file")
 }
 
 /// Read and decode every value in a `.col` file, in row order. NULL rows

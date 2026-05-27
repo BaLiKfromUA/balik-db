@@ -21,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::checksum;
 use crate::error::Error;
+use crate::fs_atomic;
 
 pub type TableId = u64;
 
 const CATALOG_FILE: &str = "catalog.toml";
-const CATALOG_TMP_FILE: &str = "catalog.toml.tmp";
 const MANIFEST_FILE: &str = "manifest.toml";
 const TABLES_DIR: &str = "tables";
 const STORAGE_TRACK: &str = "column-store";
@@ -161,17 +161,9 @@ impl Catalog {
         let serialized = toml::to_string(&file)
             .map_err(|e| Error::invalid_schema(format!("serialize catalog: {e}")))?;
         let wrapped = checksum::wrap(serialized.as_bytes());
-        let tmp_path = self.root.join(CATALOG_TMP_FILE);
-        let final_path = self.root.join(CATALOG_FILE);
-        tracing::debug!(path = %tmp_path.display(), bytes = wrapped.len(), "writing catalog tmp");
-        fs::write(&tmp_path, &wrapped).map_err(|e| Error::io("write catalog tmp", e))?;
-        tracing::debug!(path = %tmp_path.display(), "fsync catalog tmp");
-        fs::File::open(&tmp_path)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| Error::io("fsync catalog tmp", e))?;
-        tracing::debug!(from = %tmp_path.display(), to = %final_path.display(), "renaming catalog into place");
-        fs::rename(&tmp_path, &final_path).map_err(|e| Error::io("rename catalog", e))?;
-        Ok(())
+        let path = self.root.join(CATALOG_FILE);
+        tracing::debug!(path = %path.display(), bytes = wrapped.len(), "writing catalog");
+        fs_atomic::write(&path, &wrapped, "catalog")
     }
 
     pub fn create_table(
@@ -290,21 +282,13 @@ impl Catalog {
         toml::from_str(content).map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))
     }
 
-    /// Serialize `manifest` and replace its file atomically: write a sibling
-    /// temp file, fsync it, then rename it into place.
+    /// Serialize `manifest`, wrap it with a checksum, and replace its file
+    /// atomically.
     fn write_manifest_atomic(path: &Path, manifest: &ManifestFile) -> Result<(), Error> {
         let serialized = toml::to_string(manifest)
             .map_err(|e| Error::invalid_schema(format!("serialize manifest: {e}")))?;
         let wrapped = checksum::wrap(serialized.as_bytes());
-        let mut tmp = path.as_os_str().to_os_string();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        fs::write(&tmp, &wrapped).map_err(|e| Error::io("write manifest tmp", e))?;
-        fs::File::open(&tmp)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| Error::io("fsync manifest tmp", e))?;
-        fs::rename(&tmp, path).map_err(|e| Error::io("rename manifest", e))?;
-        Ok(())
+        fs_atomic::write(path, &wrapped, "manifest")
     }
 
     pub fn describe_table(&self, name: &str) -> Result<TableDescriptor, Error> {

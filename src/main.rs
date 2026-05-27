@@ -2,6 +2,7 @@ mod catalog;
 mod checksum;
 mod cli;
 mod error;
+mod fs_atomic;
 mod storage;
 
 use std::io::IsTerminal;
