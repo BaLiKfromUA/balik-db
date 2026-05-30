@@ -25,14 +25,14 @@ columns, which keeps the format easy to change.
 
 ```
 demo-db/
-├── balik.meta                  # database bootstrap (Stage 0)
+├── balik.meta                  # database bootstrap
 ├── catalog.toml                # index of tables — atomically rewritten on each create/drop
 └── tables/
     └── 00000001/               # zero-padded table_id
         ├── manifest.toml       # this table's schema, row-group size, RID counter
         └── row_groups/
             └── 000000/         # row group id (zero-padded)
-                ├── id.col      # column "id" — 56-byte header + future data
+                ├── id.col      # column "id" — 56-byte header + encoded values
                 ├── name.col    # column "name"
                 └── deletes.bm  # per-row-group delete bitmap
 ```
@@ -46,8 +46,8 @@ N `.col` files and one `deletes.bm` per row group per table.
 ### `balik.meta` — database bootstrap
 
 TOML, written once by `init`, wrapped with a leading
-[checksum line](#toml-file-integrity-catalogtoml-manifesttoml). Source of
-truth for "is this a balik database?".
+[checksum line](#toml-file-integrity). Source of truth for "is this a balik
+database?".
 
 ```toml
 # crc32 = 0xdeadbeef
@@ -61,10 +61,10 @@ Read by `metadata::status` which is the gate function used by
 checksum mismatch (or a missing wrapper) surfaces as `Status::Unreadable`.
 
 
-### TOML file integrity (`catalog.toml`, `manifest.toml`)
+### TOML file integrity
 
-Both `catalog.toml` and `manifest.toml` are wrapped with a leading
-checksum line:
+All three TOML files (`balik.meta`, `catalog.toml`, `manifest.toml`) are
+wrapped with a leading checksum line:
 
 ```toml
 # crc32 = 0xdeadbeef
@@ -87,12 +87,10 @@ formats. It catches bit rot and accidental tampering; it is **not** a
 cryptographic hash. The bitwise implementation in `src/checksum.rs` keeps
 the dep tree empty and is fast enough for files at our scale (KB at most).
 
-`balik.meta` is wrapped the same way. It's tiny and written once at `init`.
-
 ### `catalog.toml` — table index
 
 TOML, **rewritten atomically** on every `create_table` / `drop_table`,
-with a leading [checksum line](#toml-file-integrity-catalogtoml-manifesttoml).
+with a leading [checksum line](#toml-file-integrity).
 Holds the list of tables and the next-id allocator. Tables are referenced
 from this file by their `dir`, decoupling the on-disk path
 (`tables/00000001`) from the user-visible name (`users`) so renames are
@@ -119,23 +117,33 @@ dir = "tables/00000002"
 old `.col` files unambiguously identifiable even if a backup of an older
 catalog state is restored.
 
-**Atomic write protocol** (`Catalog::save_atomic` in `src/catalog/tables.rs`):
+**Atomic write protocol** (`src/fs_atomic.rs`, shared across `balik.meta`,
+`catalog.toml`, `manifest.toml`, and every `.col` file):
 
-1. Serialize new state to `catalog.toml.tmp`.
+1. Serialize new state to `<file>.tmp`.
 2. `fsync` the temp file.
-3. `rename(catalog.toml.tmp, catalog.toml)` — POSIX-atomic.
+3. `rename(<file>.tmp, <file>)` — POSIX-atomic.
 
 A crash at any point leaves either the old or new state, never a partial
 file. We do **not** currently fsync the parent directory after rename, which
 means a power cut can lose the rename even though the file content is
 durable. Acceptable for a toy DB; documented as a known gap.
 
+A crash mid-insert can also leave row groups partially written across the
+N column files of a single row — each column file is rewritten atomically
+in isolation, but there is no cross-file transaction. The `next_rid`
+allocator is bumped only after every column file has landed, so a
+half-written row never receives a public RID; on recovery the trailing
+unreferenced bytes are ignored by `get` (offsets past `next_rid` return
+`None`).
+
 ### `manifest.toml` — table schema
 
-TOML, written **once at `create_table`**, with a leading
-[checksum line](#toml-file-integrity-catalogtoml-manifesttoml). Never
-updated in Stage 1 (`next_rid` will be updated in Stage 2 when inserts
-arrive).
+TOML, with a leading [checksum line](#toml-file-integrity). Schema fields
+(`columns`, `row_group_size`, …) are written once at `create_table` and
+never modified. `next_rid` is **rewritten atomically on every insert** —
+same tmp+fsync+rename protocol as `catalog.toml` — and is the authoritative
+RID allocator (always points at the next unused row).
 
 ```toml
 # crc32 = 0xdeadbeef
@@ -169,15 +177,14 @@ Notable choices:
 - **`file` is templated.** `{row_group}` is substituted at insert time.
   Stored explicitly so a future column could be remapped to a different path
   without changing the schema's logical view.
-- **Single-shot write.** Manifest is not atomic — written once at create time
-  and never modified, so torn-write recovery is trivially "delete the
-  half-formed table dir and retry".
 
 
 ### `.col` files — column data files
 
-Binary, one file per (column × row group). Every `.col` has exactly
-the **56-byte header**:
+Binary, one file per (column × row group). Every `.col` is a **56-byte
+header** followed by an encoded data area, and is rewritten **whole** on
+every insert (atomic tmp+fsync+rename), so the header counts always match
+the data.
 
 ```text
 offset  size  field              value / notes
@@ -185,21 +192,83 @@ offset  size  field              value / notes
 0       8     magic              ASCII "BALIKCOL"
 8       4     format_version     u32 LE = 1
 12      1     logical_type       0 = INT, 1 = TEXT
-13      1     physical_encoding  0 = raw (only encoding defined for now)
+13      1     physical_encoding  0 = raw  (1 = dictionary, TEXT only — planned)
 14      1     flags              bit 0 = has_nulls; bits 1-7 reserved
 15      1     reserved
 16      4     row_count          u32 LE — rows in this file (incl. NULLs)
 20      4     null_count         u32 LE — number of NULL rows
-24      16    min                zeroed until row group seals (Stage 2+)
-40      16    max                zeroed until row group seals (Stage 2+)
-56      ...   data area          empty in Stage 1; populated in Stage 2+
+24      16    min                reserved, zeroed (skip-pruning future work)
+40      16    max                reserved, zeroed (skip-pruning future work)
+56      ...   data area          presence bitmap (if any) + encoded values
 ```
 
-Aligned at 56 bytes (multiple of 8) so the future data area is 8-byte
-aligned. Reserved zones exist so we can grow the format with new fields
-(e.g., compression algorithm, sortedness flag) without bumping
-`format_version` or breaking older readers — readers that don't know about a
-field see a zero, which by convention means "default / absent".
+Aligned at 56 bytes (multiple of 8) so the data area is 8-byte aligned.
+Reserved zones exist so we can grow the format with new fields (e.g.,
+compression algorithm, sortedness flag) without bumping `format_version` or
+breaking older readers — readers that don't know about a field see a zero,
+which by convention means "default / absent".
+
+#### Data area
+
+When `flags.has_nulls = 1`, the data area starts with a **presence bitmap**
+of `ceil(row_count / 8)` bytes (LSB-first within each byte; bit `i` = `1`
+means row `i` is present, `0` means NULL). When `flags.has_nulls = 0` no
+bitmap is emitted, saving a decode pass when nothing is NULL. `null_count`
+is authoritative regardless of the flag.
+
+Raw encodings (`physical_encoding = 0`):
+
+- **INT (raw):** `row_count` little-endian `i64`s back-to-back. NULL rows
+  store a `0` placeholder masked by the presence bitmap, keeping
+  `offset = row * 8` arithmetic.
+- **TEXT (raw):** `row_count` little-endian `u32` end-offsets, then the
+  concatenated UTF-8 blob. Value `i` is `blob[end[i-1]..end[i]]` with
+  `end[-1] = 0`. NULL rows are zero-length (offset unchanged from the
+  previous row).
+
+##### Worked example — TEXT raw with a NULL
+
+Encoding the four values `["alice", NULL, "", "bob"]` for a nullable TEXT
+column. `null_count = 1`, so `flags.has_nulls = 1`.
+
+```text
+header (56 B)
+  ...
+  row_count       = 4              (LE u32)
+  null_count      = 1              (LE u32)
+  flags           = 0b0000_0001    (has_nulls bit set)
+
+data area
+  presence bitmap (ceil(4/8) = 1 byte, LSB-first)
+    bit 0 = 1  (alice present)
+    bit 1 = 0  (NULL)
+    bit 2 = 1  ("" present — empty string is NOT null)
+    bit 3 = 1  (bob present)
+    byte    = 0b0000_1101 = 0x0D
+
+  end-offsets (4 × u32 LE = 16 bytes)
+    end[0]  = 5    after "alice"
+    end[1]  = 5    NULL row → zero-length, offset unchanged
+    end[2]  = 5    "" → zero-length, offset unchanged
+    end[3]  = 8    after "bob"
+    bytes   = 05 00 00 00  05 00 00 00  05 00 00 00  08 00 00 00
+
+  blob (8 bytes of UTF-8, no separators)
+    bytes   = 61 6C 69 63 65   62 6F 62        // "alice" + "bob"
+```
+
+Decode of row `i` reads `start = end[i-1]` (or `0` when `i == 0`) and
+`end = end[i]`. If the presence bit is `0` the row is NULL regardless of
+the slice (which for NULL and `""` is empty anyway). If the bit is `1`,
+the value is `blob[start..end]` parsed as UTF-8 — so row 0 yields
+`"alice"`, row 2 yields the empty string, row 3 yields `"bob"`.
+
+Total data area for this column: `1 + 16 + 8 = 25` bytes after the 56-byte
+header (`81` bytes on disk).
+
+Dictionary-encoded TEXT (`physical_encoding = 1`) is reserved but not yet
+implemented; the encoding tag exists so a column can be switched without
+file-format change.
 
 ### `deletes.bm` — per-row-group delete bitmap
 
@@ -212,26 +281,23 @@ offset  size  field             notes
 ------  ----  -----             -----
 0       8     magic             ASCII "BALIKDEL"
 8       4     format_version    u32 LE = 1
-12      4     deleted_count     u32 LE — number of set bits, 0 in Stage 1
+12      4     deleted_count     u32 LE — number of set bits, 0 at create time
 16      8     reserved          zeroed (forward compat)
 24      ...   bitmap data       ceil(row_group_size / 8) bytes
                                 (1 bit per slot, 1 = deleted, 0 = live)
 ```
 
 For the default `row_group_size = 8192` the file is exactly `24 + 1024 =
-1048` bytes at create time. In future, we would flip bits during `delete` / `update` and use
-`deleted_count` as a fast skip check.
+1048` bytes at create time. Future `delete` / `update` paths will flip bits
+and use `deleted_count` as a fast skip check (see
+[Mutation model](#mutation-model-planned-for-future)).
 
-### NULL handling (planned for future)
+### NULL handling
 
-When `flags.has_nulls = 1`, the data area begins with a NULL bitmap of
-`ceil(row_count / 8)` bytes (1 = present, 0 = NULL), followed by per-encoding
-values. When `flags.has_nulls = 0`, no bitmap is written even on nullable
-columns — saves a decode pass when nothing is null. `null_count` is
-authoritative regardless of the flag.
-
-The schema's `nullable: bool` declares whether NULLs are *permitted*; the
-header's `flags.has_nulls` reports whether NULLs are *present*.
+The schema's `nullable: bool` declares whether NULLs are *permitted* at
+insert time (enforced by `validate_record` in `src/storage/column_store.rs`).
+The header's `flags.has_nulls` reports whether NULLs are *present* in the
+encoded data area (see [Data area](#data-area) for the bitmap layout).
 
 ## RID semantics
 
@@ -264,7 +330,7 @@ format's `format_version` field exists for exactly that kind of migration.
 **Stable across deletes.** Once delete/update arrive, a per-row-group delete
 bitmap will track holes. RIDs never shift or get reused — deleted rows leave
 gaps, the next insert gets `next_rid`, not the freed slot. See [Mutation
-model](#mutation-model-planned-for-stage-2) below.
+model](#mutation-model-planned-for-future) below.
 
 ## Mutation model (planned for future)
 
