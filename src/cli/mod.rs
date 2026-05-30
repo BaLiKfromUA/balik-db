@@ -108,6 +108,22 @@ pub enum Command {
         #[arg(long)]
         rid: u64,
     },
+
+    /// Update a single row by its record id. Prints the new rid since
+    /// updates are modeled as delete + insert.
+    RowUpdate {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        #[arg(long)]
+        table: String,
+        /// Record id returned by a prior insert.
+        #[arg(long)]
+        rid: u64,
+        /// Comma-separated values matching the table's columns, e.g. "1,Alice".
+        /// Use NULL (case-insensitive) for a NULL value.
+        #[arg(long)]
+        values: String,
+    },
 }
 
 pub fn parse() -> Args {

@@ -4,9 +4,9 @@
 //! plane lays each table out as row groups of per-column `.col` files: a row
 //! is appended by rewriting every column file in the open row group, a point
 //! read decodes the same offset out of each, `scan` walks groups in order
-//! yielding live (`deletes.bm`-filtered) rows, and `delete` flips the
-//! tombstone bit so `get`/`scan` skip the row. `update` is not yet
-//! implemented.
+//! yielding live (`deletes.bm`-filtered) rows, `delete` flips the tombstone
+//! bit so `get`/`scan` skip the row, and `update` is modeled as
+//! `delete + insert` which reassigns the row's rid.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -239,8 +239,19 @@ impl Storage for ColumnStore {
         Ok(Some(Record { values }))
     }
 
-    fn update(&mut self, _table: &TableHandle, _rid: Rid, _record: Record) -> Result<(), Error> {
-        unimplemented!("update is not implemented yet")
+    fn update(&mut self, table: &TableHandle, rid: Rid, record: Record) -> Result<Rid, Error> {
+        // Validate the new record before any state change so a bad payload
+        // can't leave the old row tombstoned with no replacement.
+        validate_record(&table.schema, &record)?;
+        self.delete(table, rid)?;
+        let new_rid = self.insert(table, record)?;
+        tracing::debug!(
+            table = %table.name,
+            old_rid = rid.0,
+            new_rid = new_rid.0,
+            "updated row"
+        );
+        Ok(new_rid)
     }
 
     fn delete(&mut self, table: &TableHandle, rid: Rid) -> Result<(), Error> {
@@ -525,20 +536,6 @@ mod tests {
         assert!(store.list_tables().unwrap().is_empty());
     }
 
-    fn handle() -> TableHandle {
-        TableHandle {
-            id: 1,
-            name: "users".to_string(),
-            schema: schema_users(),
-            dir: std::path::PathBuf::from("/tmp/unused"),
-            row_group_size: 8192,
-        }
-    }
-
-    fn empty_record() -> Record {
-        Record { values: vec![] }
-    }
-
     fn record(values: Vec<Value>) -> Record {
         Record { values }
     }
@@ -675,11 +672,139 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "not implemented yet")]
-    fn update_is_unimplemented() {
+    fn update_reassigns_rid_and_returns_new_value() {
         let (_tmp, db) = init_db();
         let mut store = ColumnStore::open(&db).unwrap();
-        let _ = store.update(&handle(), Rid(0), empty_record());
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        let old = store
+            .insert(
+                &h,
+                record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+            )
+            .unwrap();
+        let new = store
+            .update(
+                &h,
+                old,
+                record(vec![Value::Int(1), Value::Text("alicia".to_string())]),
+            )
+            .unwrap();
+        assert_ne!(new, old);
+        assert_eq!(store.get(&h, old).unwrap(), None);
+        assert_eq!(
+            store.get(&h, new).unwrap(),
+            Some(record(vec![
+                Value::Int(1),
+                Value::Text("alicia".to_string())
+            ]))
+        );
+    }
+
+    #[test]
+    fn update_replaces_row_in_scan_with_new_rid() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        let r0 = store
+            .insert(&h, record(vec![Value::Int(1), Value::Null]))
+            .unwrap();
+        store
+            .insert(&h, record(vec![Value::Int(2), Value::Null]))
+            .unwrap();
+        let new = store
+            .update(&h, r0, record(vec![Value::Int(99), Value::Null]))
+            .unwrap();
+        let rows: Vec<(u64, i64)> = collect_scan(&store, &h)
+            .into_iter()
+            .map(|(rid, rec)| match rec.values[0] {
+                Value::Int(n) => (rid.0, n),
+                _ => unreachable!(),
+            })
+            .collect();
+        // r0 is tombstoned, the new row sits at the tail with rid `new`.
+        assert_eq!(rows, vec![(1, 2), (new.0, 99)]);
+    }
+
+    #[test]
+    fn update_unknown_rid_returns_error() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        let err = store
+            .update(&h, Rid(0), record(vec![Value::Int(1), Value::Null]))
+            .unwrap_err();
+        assert!(err.to_string().contains("no such record"));
+    }
+
+    #[test]
+    fn update_with_bad_record_does_not_tombstone_old() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        let rid = store
+            .insert(
+                &h,
+                record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+            )
+            .unwrap();
+        // Wrong arity — must fail before touching the bitmap.
+        let err = store
+            .update(&h, rid, record(vec![Value::Int(1)]))
+            .unwrap_err();
+        assert!(err.to_string().contains("column(s)"));
+        assert!(
+            store.get(&h, rid).unwrap().is_some(),
+            "old row must remain live when validation rejects the new record"
+        );
+    }
+
+    #[test]
+    fn update_persists_across_reopen() {
+        let (_tmp, db) = init_db();
+        let new_rid;
+        {
+            let mut store = ColumnStore::open(&db).unwrap();
+            store
+                .create_table("users", schema_users(), TableOptions::default())
+                .unwrap();
+            let h = store.open_table("users").unwrap();
+            let r0 = store
+                .insert(
+                    &h,
+                    record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+                )
+                .unwrap();
+            new_rid = store
+                .update(
+                    &h,
+                    r0,
+                    record(vec![Value::Int(1), Value::Text("alicia".to_string())]),
+                )
+                .unwrap();
+            assert_eq!(store.get(&h, r0).unwrap(), None);
+        }
+        let store = ColumnStore::open(&db).unwrap();
+        let h = store.open_table("users").unwrap();
+        assert_eq!(store.get(&h, Rid(0)).unwrap(), None);
+        assert_eq!(
+            store.get(&h, new_rid).unwrap(),
+            Some(record(vec![
+                Value::Int(1),
+                Value::Text("alicia".to_string())
+            ]))
+        );
     }
 
     #[test]

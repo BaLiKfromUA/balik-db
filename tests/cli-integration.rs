@@ -659,6 +659,103 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
 }
 
 #[test]
+fn row_update_reassigns_rid_and_persists_across_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT",
+        ])
+        .assert()
+        .success();
+    for values in ["1,alice", "2,bob"] {
+        balik_cli()
+            .args([
+                "row-insert",
+                "--db",
+                db,
+                "--table",
+                "users",
+                "--values",
+                values,
+            ])
+            .assert()
+            .success();
+    }
+
+    // Update rid 0 — should reassign to rid 2 (next_rid at update time).
+    balik_cli()
+        .args([
+            "row-update",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--rid",
+            "0",
+            "--values",
+            "1,alicia",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 0: updated as rid 2"));
+
+    // Fresh process → updated row + tombstone read from disk.
+    balik_cli()
+        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 0: not found"));
+    balik_cli()
+        .args(["table-scan", "--db", db, "--table", "users"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 1: id=2, name=bob"))
+        .stdout(predicate::str::contains("rid 2: id=1, name=alicia"))
+        .stdout(predicate::str::contains("rid 0").not());
+}
+
+#[test]
+fn row_update_unknown_rid_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT",
+        ])
+        .assert()
+        .success();
+    balik_cli()
+        .args([
+            "row-update",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--rid",
+            "0",
+            "--values",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such record"));
+}
+
+#[test]
 fn row_delete_unknown_rid_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();

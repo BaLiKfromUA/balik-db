@@ -54,6 +54,12 @@ fn main() -> ExitCode {
         cli::Command::RowDelete { path, table, rid } => {
             cli::commands::row_delete::run(&path, &table, rid).map_err(Into::into)
         }
+        cli::Command::RowUpdate {
+            path,
+            table,
+            rid,
+            values,
+        } => cli::commands::row_update::run(&path, &table, rid, &values).map_err(Into::into),
     };
 
     match result {

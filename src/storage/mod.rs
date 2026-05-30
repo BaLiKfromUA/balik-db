@@ -12,11 +12,9 @@
 //!   catalog::Catalog             (on-disk schema + table directory)
 //! ```
 //!
-//! The catalog-level methods (`create_table`, `open_table`, `list_tables`,
-//! `describe_table`, `drop_table`), the data-plane reads (`insert`, `get`,
-//! `scan`), and `delete` are implemented. `update` is declared on the trait
-//! so callers can compile against the full contract; its body still panics
-//! with `unimplemented!`.
+//! All catalog-level methods (`create_table`, `open_table`, `list_tables`,
+//! `describe_table`, `drop_table`) and data-plane methods (`insert`, `get`,
+//! `scan`, `update`, `delete`) are implemented.
 
 pub mod column_file;
 pub mod column_store;
@@ -91,10 +89,10 @@ pub trait Storage {
 
     fn get(&self, table: &TableHandle, rid: Rid) -> Result<Option<Record>, Error>;
 
-    // Declared now; implemented in later commits.
-
-    #[allow(dead_code)]
-    fn update(&mut self, table: &TableHandle, rid: Rid, record: Record) -> Result<(), Error>;
+    /// Replace the row at `rid` with `record`. Because updates are modeled
+    /// as `delete + insert`, the row's positional rid is reassigned — the
+    /// new rid is returned so callers can re-read or reference the row.
+    fn update(&mut self, table: &TableHandle, rid: Rid, record: Record) -> Result<Rid, Error>;
 
     fn delete(&mut self, table: &TableHandle, rid: Rid) -> Result<(), Error>;
 
