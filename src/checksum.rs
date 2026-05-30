@@ -65,18 +65,18 @@ pub fn verify(bytes: &[u8]) -> Result<&[u8], Error> {
     let nl = bytes
         .iter()
         .position(|&b| b == b'\n')
-        .ok_or_else(|| Error("checksum line missing (no newline found)".to_string()))?;
+        .ok_or_else(|| Error::corrupt("checksum line missing (no newline found)"))?;
     let line = std::str::from_utf8(&bytes[..nl])
-        .map_err(|_| Error("checksum line is not valid UTF-8".to_string()))?;
+        .map_err(|_| Error::corrupt("checksum line is not valid UTF-8"))?;
     let hex = line
         .strip_prefix(PREFIX)
-        .ok_or_else(|| Error(format!("checksum line missing or malformed: '{line}'")))?;
+        .ok_or_else(|| Error::corrupt(format!("checksum line missing or malformed: '{line}'")))?;
     let stored = u32::from_str_radix(hex, 16)
-        .map_err(|_| Error(format!("checksum value '{hex}' is not hex")))?;
+        .map_err(|_| Error::corrupt(format!("checksum value '{hex}' is not hex")))?;
     let body = &bytes[nl + 1..];
     let computed = crc32(body);
     if stored != computed {
-        return Err(Error(format!(
+        return Err(Error::checksum_mismatch(format!(
             "checksum mismatch: stored 0x{stored:08x}, computed 0x{computed:08x}"
         )));
     }

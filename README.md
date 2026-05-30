@@ -65,7 +65,28 @@ Columns:
   total                    INT    NOT NULL
 ```
 
-6. Drop a table
+6. Insert rows and read them back
+
+```bash
+./balik-cli row-insert --table orders --values "1,100"
+
+Inserted into 'orders' as rid 0
+
+./balik-cli row-insert --table orders --values "2,250"
+
+Inserted into 'orders' as rid 1
+
+./balik-cli row-get --table orders --rid 1
+
+rid 1: id=2, total=250
+```
+
+`row-insert --values` is comma-delimited and positional (no quoting / no SQL
+parser yet). The literal `NULL` (case-insensitive) maps to SQL NULL on
+nullable columns. TEXT values therefore cannot contain a comma through this
+interface — to be removed once the SQL parser lands.
+
+7. Drop a table
 
 ```bash
 ./balik-cli table-drop --table orders
@@ -73,7 +94,7 @@ Columns:
 Dropped table 'orders' from './balik_db'
 ```
 
-7. Run basic validation
+8. Run basic validation
 
 ```bash
 ./balik-cli doctor
@@ -120,15 +141,17 @@ Initialized empty balik database at './demo-db'
 ```
 src/
   main.rs              // entry point: parse args, dispatch, exit code
-  error.rs             // shared Error type used across modules
-  checksum.rs          // CRC32 wrapper for catalog.toml / manifest.toml
+  error.rs             // shared Error enum used across modules
+  checksum.rs          // CRC32 wrapper for balik.meta / catalog.toml / manifest.toml
+  fs_atomic.rs         // shared tmp+fsync+rename atomic-write helper
   catalog/             // on-disk metadata and table schemas
     mod.rs
     metadata.rs        // bootstrap metadata file (magic, version, ...)
     schema.rs          // logical column types, schema validation, --columns DSL
-    tables.rs          // persistent catalog: catalog.toml + manifest.toml
+    tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
+    values.rs          // CLI --values parser / record renderer (retired with SQL parser)
     commands/
       mod.rs
       doctor.rs        // diagnostic command
@@ -137,11 +160,13 @@ src/
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
+      row_insert.rs    // insert one row, prints assigned rid
+      row_get.rs       // fetch one row by rid
   storage/             // storage trait + column-store implementation
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
-    column_store.rs    // Track B implementation; delegates to Catalog
-    column_file.rs     // .col header format (Stage 1: header only)
-    delete_bitmap.rs   // per-row-group deletes.bm format (Stage 2 prep)
+    column_store.rs    // column-store implementation: insert / get (scan, update, delete TBD)
+    column_file.rs     // .col header + raw INT / raw TEXT data-area encoding
+    delete_bitmap.rs   // per-row-group deletes.bm format
   parser/              // stub — SQL lexer/parser (later stage)
     mod.rs
   execution/           // stub — query planning and execution (later stage)

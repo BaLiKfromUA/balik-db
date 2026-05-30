@@ -441,3 +441,99 @@ fn table_create_without_init_fails() {
             "not an initialized balik database",
         ));
 }
+
+#[test]
+fn row_insert_get_persist_across_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT?",
+        ])
+        .assert()
+        .success();
+
+    balik_cli()
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "1,Alice",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 0"));
+    balik_cli()
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "2,NULL",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 1"));
+
+    // Each invocation is a fresh process, so reading back proves durability.
+    balik_cli()
+        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("id=1, name=Alice"));
+    balik_cli()
+        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("id=2, name=NULL"));
+
+    // An id past the end reads back as not found, not an error.
+    balik_cli()
+        .args(["row-get", "--db", db, "--table", "users", "--rid", "99"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+}
+
+#[test]
+fn row_insert_null_into_not_null_column_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT",
+        ])
+        .assert()
+        .success();
+    balik_cli()
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "NULL,bob",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("NOT NULL"));
+}

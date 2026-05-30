@@ -2,6 +2,7 @@ mod catalog;
 mod checksum;
 mod cli;
 mod error;
+mod fs_atomic;
 mod storage;
 
 use std::io::IsTerminal;
@@ -30,6 +31,14 @@ fn main() -> ExitCode {
             row_group_size,
         } => cli::commands::table_create::run(&path, &table, &columns, row_group_size)
             .map_err(Into::into),
+        cli::Command::RowInsert {
+            path,
+            table,
+            values,
+        } => cli::commands::row_insert::run(&path, &table, &values).map_err(Into::into),
+        cli::Command::RowGet { path, table, rid } => {
+            cli::commands::row_get::run(&path, &table, rid).map_err(Into::into)
+        }
         cli::Command::TableList { path } => {
             cli::commands::table_list::run(&path).map_err(Into::into)
         }

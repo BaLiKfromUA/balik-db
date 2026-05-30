@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod values;
 
 use clap::{Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
@@ -40,6 +41,31 @@ pub enum Command {
         /// Override the default row-group size for this table.
         #[arg(long = "row-group-size")]
         row_group_size: Option<u32>,
+    },
+
+    /// Insert a row into a table.
+    RowInsert {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// Table name.
+        #[arg(long)]
+        table: String,
+        /// Comma-separated values matching the table's columns, e.g. "1,Alice".
+        /// Use NULL (case-insensitive) for a NULL value.
+        #[arg(long)]
+        values: String,
+    },
+
+    /// Read a single row by its record id.
+    RowGet {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// Table name.
+        #[arg(long)]
+        table: String,
+        /// Record id returned by a prior insert.
+        #[arg(long)]
+        rid: u64,
     },
 
     /// List all tables in the database.

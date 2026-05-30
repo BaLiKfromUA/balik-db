@@ -10,7 +10,7 @@ pub fn run(path: &Path) -> Result<(), Error> {
     let mut out = std::io::stdout();
     let all_ok = diagnose(&mut out, path)?;
     if !all_ok {
-        return Err(Error("one or more diagnostic checks failed".to_string()));
+        return Err(Error::other("one or more diagnostic checks failed"));
     }
     Ok(())
 }
@@ -200,9 +200,11 @@ mod tests {
         let db_path = tmp.path().join("testdb");
         std::fs::create_dir(&db_path).unwrap();
         let future = crate::catalog::metadata::FORMAT_VERSION + 1;
+        let body =
+            format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n");
         std::fs::write(
             db_path.join("balik.meta"),
-            format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n"),
+            crate::checksum::wrap(body.as_bytes()),
         )
         .unwrap();
 
