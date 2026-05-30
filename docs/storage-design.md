@@ -192,13 +192,16 @@ offset  size  field              value / notes
 0       8     magic              ASCII "BALIKCOL"
 8       4     format_version     u32 LE = 1
 12      1     logical_type       0 = INT, 1 = TEXT
-13      1     physical_encoding  0 = raw  (1 = dictionary, TEXT only — planned)
+13      1     physical_encoding  0 = raw  (1 = dictionary, TEXT only — planned;
+                                  see storage-optimizations.md)
 14      1     flags              bit 0 = has_nulls; bits 1-7 reserved
 15      1     reserved
 16      4     row_count          u32 LE — rows in this file (incl. NULLs)
 20      4     null_count         u32 LE — number of NULL rows
-24      16    min                reserved, zeroed (skip-pruning future work)
-40      16    max                reserved, zeroed (skip-pruning future work)
+24      16    min                INT: i64 LE live min in first 8 bytes; TEXT: zero
+                                  (see storage-optimizations.md)
+40      16    max                INT: i64 LE live max in first 8 bytes; TEXT: zero
+                                  (see storage-optimizations.md)
 56      ...   data area          presence bitmap (if any) + encoded values
 ```
 
@@ -266,9 +269,9 @@ the value is `blob[start..end]` parsed as UTF-8 — so row 0 yields
 Total data area for this column: `1 + 16 + 8 = 25` bytes after the 56-byte
 header (`81` bytes on disk).
 
-Dictionary-encoded TEXT (`physical_encoding = 1`) is reserved but not yet
-implemented; the encoding tag exists so a column can be switched without
-file-format change.
+Dictionary-encoded TEXT (`physical_encoding = 1`) is reserved here so a
+column can be switched without a file-format change; the design and status
+of that encoding live in [`storage-optimizations.md`](storage-optimizations.md).
 
 ### `deletes.bm` — per-row-group delete bitmap
 
@@ -352,9 +355,9 @@ original offset are never overwritten.
 ### Why update = delete + insert, not in-place
 
 - **Append-only column files.** `.col` files only grow at the tail. Whole-file
-  IO stays safe (no torn writes mid-file), seal-time min/max stats stay
-  valid, and variable-length `TEXT` doesn't need to shift every later row when
-  one value's length changes.
+  IO stays safe (no torn writes mid-file), header stats are recomputed
+  cleanly on each rewrite, and variable-length `TEXT` doesn't need to shift
+  every later row when one value's length changes.
 - **One mechanism for both verbs.** Delete and update share the bitmap; we
   don't design and maintain two separate write paths.
 - **In-place doesn't fit variable-length anyway.** A new `TEXT` value of
