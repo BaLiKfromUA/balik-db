@@ -430,5 +430,48 @@ A whole-file read at these sizes is one `read(2)` syscall and a single copy
 through the OS page cache. Repeated reads on a hot column never hit disk —
 the OS handles caching transparently.
 
+### Write amplification & known costs
 
+`insert` rewrites **every** `.col` file in the current row group, not just
+the appended tail. For one inserted row across `N` columns with `R` rows
+already in the open row group, the work is:
+
+| Step | Cost |
+|---|---|
+| Read existing column image | `R` decoded values per column × `N` columns |
+| Re-encode with one extra value | `R + 1` values per column × `N` columns |
+| Atomic write (tmp + fsync + rename) | one `write` + one `fsync` + one `rename` per column |
+| Allocator bump | one atomic rewrite of `manifest.toml` |
+
+Bounded by `row_group_size` (default 8192), so the worst case per insert is
+~64 KB rewritten per INT column or ~540 KB per average-TEXT column, plus
+`N + 1` fsyncs. Quadratic in row-group fill: filling one row group of size
+`R` costs `O(N · R²)` bytes of write traffic.
+
+**Why we accept it:**
+
+- Each column file's whole-file rewrite gives us per-file atomicity for
+  free (tmp + fsync + rename) — no in-file allocator, no free-space
+  tracking, no torn-write recovery code.
+- TEXT's variable-length offsets array would have to shift on any in-place
+  edit anyway, so true in-place append isn't simpler than a full rewrite.
+- The cost is bounded by `row_group_size`; correctness and durability are
+  the explicit design targets, throughput is not.
+
+**TODO — WAL + in-memory row buffer (future stage).** 
+
+The standard answer to per-row insert cost: inserts land in an in-memory row
+buffer for the currently-open row group and flush to columnar `.col` files
+only when the buffer fills or the group seals. The buffer is what cuts
+write amplification from `O(N · R²)` to `O(N · R)`; a **write-ahead log**
+sitting next to the buffer is what preserves the current contract that
+every insert is durable on return. Both pieces have to land together — a
+buffer without a WAL silently weakens durability across restarts, and a
+WAL without a buffer just adds an fsync per insert without cutting the
+rewrite cost.
+
+Smaller mitigations possible without a WAL: a **batched insert** API
+(`&[Record]` → one column rewrite per batch instead of per row) and
+**group commit** of fsyncs across concurrent inserts. Neither changes the
+durability contract.
 
