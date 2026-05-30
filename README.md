@@ -86,7 +86,16 @@ parser yet). The literal `NULL` (case-insensitive) maps to SQL NULL on
 nullable columns. TEXT values therefore cannot contain a comma through this
 interface — to be removed once the SQL parser lands.
 
-7. Drop a table
+7. Read all records from table
+
+```bash
+./balik-cli table-scan --table orders
+
+rid 0: id=1, total=100
+rid 1: id=2, total=200
+```
+
+8. Drop a table
 
 ```bash
 ./balik-cli table-drop --table orders
@@ -94,7 +103,7 @@ interface — to be removed once the SQL parser lands.
 Dropped table 'orders' from './balik_db'
 ```
 
-8. Run basic validation
+9. Run basic validation
 
 ```bash
 ./balik-cli doctor
