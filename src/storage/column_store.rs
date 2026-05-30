@@ -2,9 +2,10 @@
 //!
 //! Catalog-level methods delegate straight through to `Catalog`. The data
 //! plane lays each table out as row groups of per-column `.col` files: a row
-//! is appended by rewriting every column file in the open row group, and a
-//! point read decodes the same offset out of each. `scan`, `update`, and
-//! `delete` are not yet implemented.
+//! is appended by rewriting every column file in the open row group, a point
+//! read decodes the same offset out of each, and `scan` walks groups in
+//! order yielding live (`deletes.bm`-filtered) rows. `update` and `delete`
+//! are not yet implemented.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -200,7 +201,7 @@ impl Storage for ColumnStore {
         // Append the value to each column file by rewriting the whole file.
         for (i, col) in table.schema.columns.iter().enumerate() {
             let path = col_path(&rg_dir, &col.name);
-            let mut values = column_file::read_column(&path)?;
+            let (_, mut values) = column_file::read_column(&path)?;
             values.push(record.values[i].clone());
             column_file::write_column(&path, col.ty, &values)?;
         }
@@ -223,7 +224,7 @@ impl Storage for ColumnStore {
 
         let mut values = Vec::with_capacity(table.schema.columns.len());
         for col in &table.schema.columns {
-            let column = column_file::read_column(&col_path(&rg_dir, &col.name))?;
+            let (_, column) = column_file::read_column(&col_path(&rg_dir, &col.name))?;
             match column.get(offset) {
                 Some(value) => values.push(value.clone()),
                 None => return Ok(None), // rid is past the last row in this group
@@ -240,8 +241,113 @@ impl Storage for ColumnStore {
         unimplemented!("delete is not implemented yet")
     }
 
-    fn scan<'a>(&'a self, _table: &TableHandle) -> Result<ScanIter<'a>, Error> {
-        unimplemented!("scan is not implemented yet")
+    fn scan<'a>(&'a self, table: &TableHandle) -> Result<ScanIter<'a>, Error> {
+        // Snapshot `next_rid` once at scan-start so a concurrent insert can't
+        // make us yield a row whose data we never planned to read.
+        let total_rows = self.catalog.describe_table(&table.name)?.next_rid;
+        let state = ScanState {
+            table_dir: table.dir.clone(),
+            columns: table.schema.columns.clone(),
+            row_group_size: table.row_group_size,
+            total_rows,
+            current_group: 0,
+            next_offset_in_group: 0,
+            loaded_group: None,
+            errored: false,
+        };
+        Ok(Box::new(state))
+    }
+}
+
+/// One row group loaded into memory for the duration of an in-flight scan.
+/// Held one-at-a-time inside `ScanState` so memory usage tops out at the
+/// rows of a single row group, not the whole table.
+struct LoadedGroup {
+    /// Per-column decoded values, in `columns` order.
+    columns: Vec<Vec<Value>>,
+    /// Raw bitmap bytes from `deletes.bm` (header already stripped).
+    deletes: Vec<u8>,
+    /// Number of live offsets in this group; comes from any column's header
+    /// since every column in a group has identical row counts.
+    row_count: usize,
+}
+
+/// Streaming scan iterator. Lazily loads each row group on demand, walks
+/// offsets within the group, and stops when `current_group * row_group_size`
+/// reaches the snapshotted `total_rows`. After a load failure, `errored`
+/// pins it shut so the caller can't accidentally resume past corruption.
+struct ScanState {
+    table_dir: PathBuf,
+    columns: Vec<Column>,
+    row_group_size: u32,
+    total_rows: u64,
+
+    current_group: u32,
+    next_offset_in_group: usize,
+    loaded_group: Option<LoadedGroup>,
+    errored: bool,
+}
+
+impl ScanState {
+    fn load_current_group(&mut self) -> Result<(), Error> {
+        let rg_dir = row_group_dir(&self.table_dir, self.current_group);
+        let mut columns = Vec::with_capacity(self.columns.len());
+        for col in &self.columns {
+            let (_, values) = column_file::read_column(&col_path(&rg_dir, &col.name))?;
+            columns.push(values);
+        }
+        let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
+        // All columns in a group carry identical row counts; take the first.
+        let row_count = columns.first().map_or(0, |c| c.len());
+        self.loaded_group = Some(LoadedGroup {
+            columns,
+            deletes,
+            row_count,
+        });
+        self.next_offset_in_group = 0;
+        Ok(())
+    }
+}
+
+impl Iterator for ScanState {
+    type Item = Result<(Rid, Record), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.errored {
+            return None;
+        }
+        let rgs = u64::from(self.row_group_size);
+        loop {
+            let first_rid_of_group = u64::from(self.current_group) * rgs;
+            if first_rid_of_group >= self.total_rows {
+                return None;
+            }
+            if self.loaded_group.is_none()
+                && let Err(e) = self.load_current_group()
+            {
+                self.errored = true;
+                return Some(Err(e));
+            }
+            let group = self.loaded_group.as_ref().unwrap();
+            while self.next_offset_in_group < group.row_count {
+                let offset = self.next_offset_in_group;
+                self.next_offset_in_group += 1;
+                let rid = first_rid_of_group + offset as u64;
+                if rid >= self.total_rows {
+                    // Guard against catalog/disk drift: header says more rows
+                    // than the snapshotted next_rid covers.
+                    return None;
+                }
+                if delete_bitmap::is_deleted(&group.deletes, offset) {
+                    continue;
+                }
+                let values = group.columns.iter().map(|c| c[offset].clone()).collect();
+                return Some(Ok((Rid(rid), Record { values })));
+            }
+            // Group exhausted — advance and let the next iteration load.
+            self.loaded_group = None;
+            self.current_group += 1;
+        }
     }
 }
 
@@ -352,19 +458,19 @@ mod tests {
         assert!(rg0.is_dir());
 
         // id.col -> INT, name.col -> TEXT, both empty headers.
-        let id_h = column_file::read_header(&rg0.join("id.col")).unwrap();
+        let (id_h, _) = column_file::read_column(&rg0.join("id.col")).unwrap();
         assert_eq!(id_h.logical_type, ColumnType::Int);
         assert_eq!(id_h.row_count, 0);
         assert_eq!(id_h.null_count, 0);
         assert!(!id_h.has_nulls());
 
-        let name_h = column_file::read_header(&rg0.join("name.col")).unwrap();
+        let (name_h, _) = column_file::read_column(&rg0.join("name.col")).unwrap();
         assert_eq!(name_h.logical_type, ColumnType::Text);
         assert_eq!(name_h.row_count, 0);
 
         let bm_path = rg0.join(delete_bitmap::FILE_NAME);
         assert!(bm_path.is_file(), "deletes.bm should be materialized");
-        let bm_h = delete_bitmap::read_header(&bm_path).unwrap();
+        let (bm_h, _) = delete_bitmap::load(&bm_path).unwrap();
         assert_eq!(bm_h.deleted_count, 0);
     }
 
@@ -558,11 +664,145 @@ mod tests {
         let _ = store.delete(&handle(), Rid(0));
     }
 
+    fn collect_scan(store: &ColumnStore, h: &TableHandle) -> Vec<(Rid, Record)> {
+        store
+            .scan(h)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+    }
+
     #[test]
-    #[should_panic(expected = "not implemented yet")]
-    fn scan_is_unimplemented() {
+    fn scan_on_empty_table_yields_nothing() {
         let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        assert!(collect_scan(&store, &h).is_empty());
+    }
+
+    #[test]
+    fn scan_returns_inserted_rows_in_rid_order() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        store
+            .insert(
+                &h,
+                record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+            )
+            .unwrap();
+        store
+            .insert(&h, record(vec![Value::Int(2), Value::Null]))
+            .unwrap();
+        store
+            .insert(
+                &h,
+                record(vec![Value::Int(3), Value::Text("carol".to_string())]),
+            )
+            .unwrap();
+
+        let rows = collect_scan(&store, &h);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, Rid(0));
+        assert_eq!(rows[2].0, Rid(2));
+        assert_eq!(rows[1].1.values, vec![Value::Int(2), Value::Null]);
+    }
+
+    #[test]
+    fn scan_walks_multiple_row_groups() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "t",
+                schema_users(),
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let h = store.open_table("t").unwrap();
+        for i in 0..5 {
+            store
+                .insert(
+                    &h,
+                    record(vec![Value::Int(i), Value::Text(format!("n{i}"))]),
+                )
+                .unwrap();
+        }
+        let rows = collect_scan(&store, &h);
+        let rids: Vec<u64> = rows.iter().map(|(r, _)| r.0).collect();
+        assert_eq!(rids, vec![0, 1, 2, 3, 4]);
+        for (i, (_, rec)) in rows.iter().enumerate() {
+            assert_eq!(rec.values[0], Value::Int(i as i64));
+            assert_eq!(rec.values[1], Value::Text(format!("n{i}")));
+        }
+    }
+
+    #[test]
+    fn scan_skips_offsets_marked_deleted_in_bitmap() {
+        // Until S5 lands, delete/update aren't wired in. Simulate a tombstone
+        // by flipping the bitmap byte directly to prove the scan honors it.
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        for i in 0..3 {
+            store
+                .insert(&h, record(vec![Value::Int(i), Value::Null]))
+                .unwrap();
+        }
+
+        let bm_path = db
+            .join("tables")
+            .join("00000001")
+            .join("row_groups")
+            .join("000000")
+            .join(delete_bitmap::FILE_NAME);
+        let mut bytes = std::fs::read(&bm_path).unwrap();
+        // Mark rid 1 deleted: bit 1 of the first bitmap byte (after the 24-byte header).
+        bytes[24] |= 0b0000_0010;
+        std::fs::write(&bm_path, bytes).unwrap();
+
+        let rids: Vec<u64> = collect_scan(&store, &h)
+            .into_iter()
+            .map(|(r, _)| r.0)
+            .collect();
+        assert_eq!(rids, vec![0, 2]);
+    }
+
+    #[test]
+    fn scan_results_survive_reopen() {
+        let (_tmp, db) = init_db();
+        {
+            let mut store = ColumnStore::open(&db).unwrap();
+            store
+                .create_table("users", schema_users(), TableOptions::default())
+                .unwrap();
+            let h = store.open_table("users").unwrap();
+            store
+                .insert(
+                    &h,
+                    record(vec![Value::Int(7), Value::Text("zed".to_string())]),
+                )
+                .unwrap();
+            store
+                .insert(&h, record(vec![Value::Int(8), Value::Null]))
+                .unwrap();
+        }
         let store = ColumnStore::open(&db).unwrap();
-        let _ = store.scan(&handle());
+        let h = store.open_table("users").unwrap();
+        let rows = collect_scan(&store, &h);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1.values[0], Value::Int(7));
+        assert_eq!(rows[1].1.values[1], Value::Null);
     }
 }

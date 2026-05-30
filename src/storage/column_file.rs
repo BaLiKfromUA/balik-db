@@ -159,13 +159,6 @@ fn parse_header(bytes: &[u8], path: &Path) -> Result<Header, Error> {
     })
 }
 
-/// Read and parse just the header of an existing `.col` file.
-#[allow(dead_code)]
-pub fn read_header(path: &Path) -> Result<Header, Error> {
-    let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
-    parse_header(&bytes, path)
-}
-
 // ---- data-area codec ----
 
 /// Presence bitmap for `values`: bit i set (LSB-first within each byte) when
@@ -318,10 +311,10 @@ pub fn write_column(path: &Path, ty: ColumnType, values: &[Value]) -> Result<(),
     fs_atomic::write(path, &bytes, "column file")
 }
 
-/// Read and decode every value in a `.col` file, in row order. NULL rows
-/// decode to `Value::Null`. Corrupt or truncated files return `Err` so the
-/// scan path never yields garbage.
-pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
+/// Read and decode a `.col` file, returning its parsed header and every
+/// value in row order. NULL rows decode to `Value::Null`. Corrupt or
+/// truncated files return `Err` so the scan path never yields garbage.
+pub fn read_column(path: &Path) -> Result<(Header, Vec<Value>), Error> {
     let bytes = fs::read(path).map_err(|e| Error::io("read column file", e))?;
     let header = parse_header(&bytes, path)?;
     let row_count = header.row_count as usize;
@@ -347,10 +340,11 @@ pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
             header.physical_encoding
         )));
     }
-    match header.logical_type {
-        ColumnType::Int => decode_int_raw(data, row_count, present, path),
-        ColumnType::Text => decode_text_raw(data, row_count, present, path),
-    }
+    let values = match header.logical_type {
+        ColumnType::Int => decode_int_raw(data, row_count, present, path)?,
+        ColumnType::Text => decode_text_raw(data, row_count, present, path)?,
+    };
+    Ok((header, values))
 }
 
 #[cfg(test)]
@@ -401,7 +395,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("id.col");
         write_empty(&path, ColumnType::Int).unwrap();
-        let h = read_header(&path).unwrap();
+        let (h, _) = read_column(&path).unwrap();
         assert_eq!(h.format_version, FORMAT_VERSION);
         assert_eq!(h.logical_type, ColumnType::Int);
         assert_eq!(h.physical_encoding, PHYSICAL_RAW);
@@ -418,7 +412,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("name.col");
         write_empty(&path, ColumnType::Text).unwrap();
-        let h = read_header(&path).unwrap();
+        let (h, _) = read_column(&path).unwrap();
         assert_eq!(h.logical_type, ColumnType::Text);
     }
 
@@ -440,45 +434,45 @@ mod tests {
     }
 
     #[test]
-    fn read_header_rejects_short_file() {
+    fn read_column_rejects_short_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.col");
         fs::write(&path, b"too short").unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = read_column(&path).unwrap_err();
         assert!(err.to_string().contains("shorter than"));
     }
 
     #[test]
-    fn read_header_rejects_bad_magic() {
+    fn read_column_rejects_bad_magic() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.col");
         let mut bytes = empty_header(ColumnType::Int);
         bytes[0..8].copy_from_slice(b"NOPENOPE");
         fs::write(&path, bytes).unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = read_column(&path).unwrap_err();
         assert!(err.to_string().contains("bad magic"));
     }
 
     #[test]
-    fn read_header_rejects_too_new_format() {
+    fn read_column_rejects_too_new_format() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.col");
         let mut bytes = empty_header(ColumnType::Int);
         let future = FORMAT_VERSION + 1;
         bytes[8..12].copy_from_slice(&future.to_le_bytes());
         fs::write(&path, bytes).unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = read_column(&path).unwrap_err();
         assert!(err.to_string().contains("format_version"));
     }
 
     #[test]
-    fn read_header_rejects_unknown_logical_type() {
+    fn read_column_rejects_unknown_logical_type() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.col");
         let mut bytes = empty_header(ColumnType::Int);
         bytes[12] = 99;
         fs::write(&path, bytes).unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = read_column(&path).unwrap_err();
         assert!(err.to_string().contains("unknown logical type"));
     }
 
@@ -486,7 +480,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.col");
         write_column(&path, ty, values).unwrap();
-        read_column(&path).unwrap()
+        read_column(&path).unwrap().1
     }
 
     #[test]
@@ -504,7 +498,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.col");
         write_column(&path, ColumnType::Int, &values).unwrap();
-        let h = read_header(&path).unwrap();
+        let (h, _) = read_column(&path).unwrap();
         assert!(h.has_nulls());
         assert_eq!(h.row_count, 4);
         assert_eq!(h.null_count, 2);

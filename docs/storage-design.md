@@ -441,7 +441,7 @@ already in the open row group, the work is:
 | Read existing column image | `R` decoded values per column × `N` columns |
 | Re-encode with one extra value | `R + 1` values per column × `N` columns |
 | Atomic write (tmp + fsync + rename) | one `write` + one `fsync` + one `rename` per column |
-| Allocator bump | one atomic rewrite of `manifest.toml` |
+| `next_rid` bump | one atomic rewrite of `manifest.toml` |
 
 Bounded by `row_group_size` (default 8192), so the worst case per insert is
 ~64 KB rewritten per INT column or ~540 KB per average-TEXT column, plus
