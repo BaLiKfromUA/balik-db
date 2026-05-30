@@ -13,10 +13,10 @@
 //! ```
 //!
 //! The catalog-level methods (`create_table`, `open_table`, `list_tables`,
-//! `describe_table`, `drop_table`) and the point operations `insert` / `get`
-//! are implemented. `scan`, `update`, and `delete` are declared on the trait
-//! so callers can compile against the full contract; their bodies still panic
-//! with `unimplemented!`.
+//! `describe_table`, `drop_table`) and the data-plane reads (`insert`,
+//! `get`, `scan`) are implemented. `update` and `delete` are declared on the
+//! trait so callers can compile against the full contract; their bodies
+//! still panic with `unimplemented!`.
 
 pub mod column_file;
 pub mod column_store;
@@ -67,7 +67,6 @@ pub struct Record {
 /// Iterator returned by `Storage::scan`. Aliased so the trait signature
 /// doesn't trip clippy's `type_complexity` lint. The `+ 'a` bound ties the
 /// iterator's lifetime to the `&self` borrow that produced it.
-#[allow(dead_code)]
 pub type ScanIter<'a> = Box<dyn Iterator<Item = Result<(Rid, Record), Error>> + 'a>;
 
 pub trait Storage {
@@ -100,6 +99,5 @@ pub trait Storage {
     #[allow(dead_code)]
     fn delete(&mut self, table: &TableHandle, rid: Rid) -> Result<(), Error>;
 
-    #[allow(dead_code)]
     fn scan<'a>(&'a self, table: &TableHandle) -> Result<ScanIter<'a>, Error>;
 }

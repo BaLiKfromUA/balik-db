@@ -2,13 +2,10 @@
 //!
 //! One bitmap file lives in each row-group directory next to the `.col`
 //! files. Bit `i` of the bitmap corresponds to the row at offset `i` within
-//! the row group: `1` means deleted, `0` means live.
-//!
-//! Stage 1 materializes the file at `create_table` time with all bits zero
-//! and the bitmap pre-sized to the table's `row_group_size`. Stage 2+ flips
-//! bits when `delete` / `update` arrives — no resize needed. Stage 2+ will
-//! also need atomic writes (tmp + fsync + rename); Stage 1's create-time
-//! write is single-shot, so a plain `fs::write` is sufficient.
+//! the row group: `1` means deleted, `0` means live. The file is
+//! materialized with all bits zero at `create_table` time, pre-sized to the
+//! table's `row_group_size`, and never resized — `delete` / `update` flip
+//! bits in place.
 //!
 //! Why a separate file (not a section of each `.col`):
 //!
@@ -49,8 +46,6 @@ const FORMAT_VERSION: u32 = 1;
 pub const FILE_NAME: &str = "deletes.bm";
 
 /// Parsed view of a `deletes.bm` header.
-// Stage 2: read_header returns this; Stage 1 only constructs it inside tests.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub format_version: u32,
@@ -84,11 +79,9 @@ pub fn write_empty(path: &Path, row_group_size: u32) -> Result<(), Error> {
     fs::write(path, empty_file(row_group_size)).map_err(|e| Error::io("write delete bitmap", e))
 }
 
-/// Parse the header of an existing `deletes.bm` file.
-// Stage 2: scan / get will call this; Stage 1 only exercises it in tests.
-#[allow(dead_code)]
-pub fn read_header(path: &Path) -> Result<Header, Error> {
-    let bytes = fs::read(path).map_err(|e| Error::io("read delete bitmap", e))?;
+/// Parse a `deletes.bm` header from the leading bytes of a file image,
+/// validating magic and format version.
+fn parse_header(bytes: &[u8], path: &Path) -> Result<Header, Error> {
     if bytes.len() < HEADER_SIZE {
         return Err(Error::corrupt(format!(
             "delete bitmap '{}' shorter than {HEADER_SIZE}-byte header",
@@ -113,6 +106,22 @@ pub fn read_header(path: &Path) -> Result<Header, Error> {
         format_version,
         deleted_count,
     })
+}
+
+/// Read the whole bitmap file and return `(header, bitmap_bytes)`. The
+/// bitmap slice covers the trailing region after the 24-byte header and is
+/// sized to the row group's `row_group_size` at create time.
+pub fn load(path: &Path) -> Result<(Header, Vec<u8>), Error> {
+    let bytes = fs::read(path).map_err(|e| Error::io("read delete bitmap", e))?;
+    let header = parse_header(&bytes, path)?;
+    Ok((header, bytes[HEADER_SIZE..].to_vec()))
+}
+
+/// True if `offset` is marked deleted in `bitmap`. Out-of-range offsets are
+/// treated as live, since the bitmap is pre-sized to `row_group_size`.
+pub fn is_deleted(bitmap: &[u8], offset: usize) -> bool {
+    let byte = offset / 8;
+    byte < bitmap.len() && bitmap[byte] & (1 << (offset % 8)) != 0
 }
 
 #[cfg(test)]
@@ -164,7 +173,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("deletes.bm");
         write_empty(&path, 8192).unwrap();
-        let h = read_header(&path).unwrap();
+        let (h, _) = load(&path).unwrap();
         assert_eq!(h.format_version, FORMAT_VERSION);
         assert_eq!(h.deleted_count, 0);
         let bytes = fs::read(&path).unwrap();
@@ -172,34 +181,63 @@ mod tests {
     }
 
     #[test]
-    fn read_header_rejects_short_file() {
+    fn load_rejects_short_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.bm");
         fs::write(&path, b"too short").unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = load(&path).unwrap_err();
         assert!(err.to_string().contains("shorter than"));
     }
 
     #[test]
-    fn read_header_rejects_bad_magic() {
+    fn load_rejects_bad_magic() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.bm");
         let mut bytes = empty_file(8192);
         bytes[0..8].copy_from_slice(b"NOPENOPE");
         fs::write(&path, bytes).unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = load(&path).unwrap_err();
         assert!(err.to_string().contains("bad magic"));
     }
 
     #[test]
-    fn read_header_rejects_too_new_format() {
+    fn load_rejects_too_new_format() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad.bm");
         let mut bytes = empty_file(8192);
         let future = FORMAT_VERSION + 1;
         bytes[8..12].copy_from_slice(&future.to_le_bytes());
         fs::write(&path, bytes).unwrap();
-        let err = read_header(&path).unwrap_err();
+        let err = load(&path).unwrap_err();
         assert!(err.to_string().contains("format_version"));
+    }
+
+    #[test]
+    fn load_returns_header_and_bitmap_sized_to_row_group() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("deletes.bm");
+        write_empty(&path, 17).unwrap(); // 17 rows → 3 bitmap bytes
+        let (header, bitmap) = load(&path).unwrap();
+        assert_eq!(header.deleted_count, 0);
+        assert_eq!(bitmap.len(), 3);
+        assert!(bitmap.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn is_deleted_reads_lsb_first_within_bytes() {
+        // bit 0 + bit 9 set; LSB-first within each byte.
+        let bitmap = vec![0b0000_0001, 0b0000_0010];
+        assert!(is_deleted(&bitmap, 0));
+        assert!(!is_deleted(&bitmap, 1));
+        assert!(!is_deleted(&bitmap, 8));
+        assert!(is_deleted(&bitmap, 9));
+    }
+
+    #[test]
+    fn is_deleted_treats_out_of_range_as_live() {
+        let bitmap = vec![0xFF];
+        assert!(is_deleted(&bitmap, 0));
+        assert!(!is_deleted(&bitmap, 8)); // past the end → live
+        assert!(!is_deleted(&[], 0)); // empty bitmap (rgs=0) → never deleted
     }
 }

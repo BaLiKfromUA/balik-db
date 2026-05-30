@@ -48,6 +48,9 @@ fn main() -> ExitCode {
         cli::Command::TableDrop { path, table } => {
             cli::commands::table_drop::run(&path, &table).map_err(Into::into)
         }
+        cli::Command::TableScan { path, table } => {
+            cli::commands::table_scan::run(&path, &table).map_err(Into::into)
+        }
     };
 
     match result {

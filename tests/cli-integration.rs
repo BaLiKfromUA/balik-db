@@ -537,3 +537,69 @@ fn row_insert_null_into_not_null_column_fails() {
         .failure()
         .stderr(predicate::str::contains("NOT NULL"));
 }
+
+#[test]
+fn table_scan_lists_rows_after_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT?",
+        ])
+        .assert()
+        .success();
+
+    for (id, name) in [("1", "alice"), ("2", "NULL"), ("3", "carol")] {
+        balik_cli()
+            .args([
+                "row-insert",
+                "--db",
+                db,
+                "--table",
+                "users",
+                "--values",
+                &format!("{id},{name}"),
+            ])
+            .assert()
+            .success();
+    }
+
+    // Fresh process → proves the scan reads from disk, not a cached state.
+    balik_cli()
+        .args(["table-scan", "--db", db, "--table", "users"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
+        .stdout(predicate::str::contains("rid 1: id=2, name=NULL"))
+        .stdout(predicate::str::contains("rid 2: id=3, name=carol"));
+}
+
+#[test]
+fn table_scan_on_empty_table_reports_no_rows() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "t",
+            "--columns",
+            "id:INT",
+        ])
+        .assert()
+        .success();
+    balik_cli()
+        .args(["table-scan", "--db", db, "--table", "t"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(no rows)"));
+}

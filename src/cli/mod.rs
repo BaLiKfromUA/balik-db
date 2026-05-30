@@ -89,6 +89,14 @@ pub enum Command {
         #[arg(long)]
         table: String,
     },
+
+    /// Print every live row in a table, one per line.
+    TableScan {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        #[arg(long)]
+        table: String,
+    },
 }
 
 pub fn parse() -> Args {
