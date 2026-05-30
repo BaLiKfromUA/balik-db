@@ -1,7 +1,9 @@
 pub mod doctor;
 pub mod init;
+pub mod row_delete;
 pub mod row_get;
 pub mod row_insert;
+pub mod row_update;
 pub mod table_create;
 pub mod table_describe;
 pub mod table_drop;

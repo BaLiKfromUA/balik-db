@@ -92,10 +92,44 @@ interface — to be removed once the SQL parser lands.
 ./balik-cli table-scan --table orders
 
 rid 0: id=1, total=100
-rid 1: id=2, total=200
+rid 1: id=2, total=250
 ```
 
-8. Drop a table
+8. Update a row
+
+Updates are modeled as `delete + insert`, so the row gets a new rid — the
+old one becomes a tombstone and the new value is appended at the tail.
+
+```bash
+./balik-cli row-update --table orders --rid 0 --values "1,150"
+
+rid 0: updated as rid 2
+
+./balik-cli row-get --table orders --rid 0
+
+rid 0: not found
+
+./balik-cli table-scan --table orders
+
+rid 1: id=2, total=250
+rid 2: id=1, total=150
+```
+
+9. Delete a row
+
+```bash
+./balik-cli row-delete --table orders --rid 1
+
+rid 1: deleted
+
+./balik-cli table-scan --table orders
+
+rid 2: id=1, total=150
+```
+
+Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
+
+10. Drop a table
 
 ```bash
 ./balik-cli table-drop --table orders
@@ -103,7 +137,7 @@ rid 1: id=2, total=200
 Dropped table 'orders' from './balik_db'
 ```
 
-9. Run basic validation
+11. Run basic validation
 
 ```bash
 ./balik-cli doctor
@@ -169,11 +203,14 @@ src/
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
+      table_scan.rs    // print every live row in a table
       row_insert.rs    // insert one row, prints assigned rid
       row_get.rs       // fetch one row by rid
+      row_update.rs    // update one row, prints the new rid (update = delete + insert)
+      row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
-    column_store.rs    // column-store implementation: insert / get (scan, update, delete TBD)
+    column_store.rs    // column-store implementation: insert / get / scan / update / delete
     column_file.rs     // .col header + raw INT / raw TEXT data-area encoding
     delete_bitmap.rs   // per-row-group deletes.bm format
   parser/              // stub — SQL lexer/parser (later stage)
