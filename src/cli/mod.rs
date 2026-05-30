@@ -97,6 +97,17 @@ pub enum Command {
         #[arg(long)]
         table: String,
     },
+
+    /// Delete a single row by its record id.
+    RowDelete {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        #[arg(long)]
+        table: String,
+        /// Record id returned by a prior insert.
+        #[arg(long)]
+        rid: u64,
+    },
 }
 
 pub fn parse() -> Args {

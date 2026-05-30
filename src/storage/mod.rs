@@ -13,10 +13,10 @@
 //! ```
 //!
 //! The catalog-level methods (`create_table`, `open_table`, `list_tables`,
-//! `describe_table`, `drop_table`) and the data-plane reads (`insert`,
-//! `get`, `scan`) are implemented. `update` and `delete` are declared on the
-//! trait so callers can compile against the full contract; their bodies
-//! still panic with `unimplemented!`.
+//! `describe_table`, `drop_table`), the data-plane reads (`insert`, `get`,
+//! `scan`), and `delete` are implemented. `update` is declared on the trait
+//! so callers can compile against the full contract; its body still panics
+//! with `unimplemented!`.
 
 pub mod column_file;
 pub mod column_store;
@@ -96,7 +96,6 @@ pub trait Storage {
     #[allow(dead_code)]
     fn update(&mut self, table: &TableHandle, rid: Rid, record: Record) -> Result<(), Error>;
 
-    #[allow(dead_code)]
     fn delete(&mut self, table: &TableHandle, rid: Rid) -> Result<(), Error>;
 
     fn scan<'a>(&'a self, table: &TableHandle) -> Result<ScanIter<'a>, Error>;

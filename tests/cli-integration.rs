@@ -603,3 +603,80 @@ fn table_scan_on_empty_table_reports_no_rows() {
         .success()
         .stdout(predicate::str::contains("(no rows)"));
 }
+
+#[test]
+fn row_delete_hides_row_from_get_and_scan_across_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT",
+        ])
+        .assert()
+        .success();
+    for (id, name) in [("1", "alice"), ("2", "bob"), ("3", "carol")] {
+        balik_cli()
+            .args([
+                "row-insert",
+                "--db",
+                db,
+                "--table",
+                "users",
+                "--values",
+                &format!("{id},{name}"),
+            ])
+            .assert()
+            .success();
+    }
+
+    balik_cli()
+        .args(["row-delete", "--db", db, "--table", "users", "--rid", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 1: deleted"));
+
+    // Fresh process → tombstone read back from disk, not memory.
+    balik_cli()
+        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 1: not found"));
+
+    balik_cli()
+        .args(["table-scan", "--db", db, "--table", "users"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
+        .stdout(predicate::str::contains("rid 2: id=3, name=carol"))
+        .stdout(predicate::str::contains("rid 1").not());
+}
+
+#[test]
+fn row_delete_unknown_rid_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--columns",
+            "id:INT",
+        ])
+        .assert()
+        .success();
+    balik_cli()
+        .args(["row-delete", "--db", db, "--table", "users", "--rid", "0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such record"));
+}

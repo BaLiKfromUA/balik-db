@@ -37,6 +37,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::Error;
+use crate::fs_atomic;
 
 const HEADER_SIZE: usize = 24;
 const MAGIC: &[u8; 8] = b"BALIKDEL";
@@ -122,6 +123,38 @@ pub fn load(path: &Path) -> Result<(Header, Vec<u8>), Error> {
 pub fn is_deleted(bitmap: &[u8], offset: usize) -> bool {
     let byte = offset / 8;
     byte < bitmap.len() && bitmap[byte] & (1 << (offset % 8)) != 0
+}
+
+/// Set the deleted bit for `offset` in the bitmap at `path`, bump
+/// `deleted_count`, and rewrite the whole file atomically. Idempotent: if
+/// the bit is already set, the file is rewritten with `deleted_count`
+/// unchanged. Errors if `offset` is past the bitmap, since the on-disk
+/// bitmap is sized to the row group at create time.
+pub fn mark_deleted(path: &Path, offset: usize) -> Result<(), Error> {
+    let (header, mut bitmap) = load(path)?;
+    let byte = offset / 8;
+    if byte >= bitmap.len() {
+        return Err(Error::other(format!(
+            "delete offset {offset} out of range for bitmap '{}'",
+            path.display()
+        )));
+    }
+    let mask = 1u8 << (offset % 8);
+    let newly_set = bitmap[byte] & mask == 0;
+    bitmap[byte] |= mask;
+    let new_count = if newly_set {
+        header.deleted_count + 1
+    } else {
+        header.deleted_count
+    };
+
+    let mut bytes = vec![0u8; HEADER_SIZE + bitmap.len()];
+    bytes[0..8].copy_from_slice(MAGIC);
+    bytes[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    bytes[12..16].copy_from_slice(&new_count.to_le_bytes());
+    // [16..24] reserved (already zeroed)
+    bytes[HEADER_SIZE..].copy_from_slice(&bitmap);
+    fs_atomic::write(path, &bytes, "delete bitmap")
 }
 
 #[cfg(test)]
@@ -239,5 +272,44 @@ mod tests {
         assert!(is_deleted(&bitmap, 0));
         assert!(!is_deleted(&bitmap, 8)); // past the end → live
         assert!(!is_deleted(&[], 0)); // empty bitmap (rgs=0) → never deleted
+    }
+
+    #[test]
+    fn mark_deleted_sets_bit_and_bumps_count() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("deletes.bm");
+        write_empty(&path, 16).unwrap();
+
+        mark_deleted(&path, 3).unwrap();
+        let (h, bm) = load(&path).unwrap();
+        assert_eq!(h.deleted_count, 1);
+        assert!(is_deleted(&bm, 3));
+        assert!(!is_deleted(&bm, 2));
+
+        mark_deleted(&path, 10).unwrap();
+        let (h, bm) = load(&path).unwrap();
+        assert_eq!(h.deleted_count, 2);
+        assert!(is_deleted(&bm, 3));
+        assert!(is_deleted(&bm, 10));
+    }
+
+    #[test]
+    fn mark_deleted_is_idempotent_for_already_deleted_offsets() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("deletes.bm");
+        write_empty(&path, 8).unwrap();
+        mark_deleted(&path, 0).unwrap();
+        mark_deleted(&path, 0).unwrap(); // second call must not double-count
+        let (h, _) = load(&path).unwrap();
+        assert_eq!(h.deleted_count, 1);
+    }
+
+    #[test]
+    fn mark_deleted_rejects_offset_past_bitmap() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("deletes.bm");
+        write_empty(&path, 8).unwrap(); // 8 slots → 1 byte → offsets 0..8 valid
+        let err = mark_deleted(&path, 8).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
     }
 }
