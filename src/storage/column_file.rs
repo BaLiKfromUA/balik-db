@@ -53,8 +53,6 @@ const HEADER_SIZE: usize = 56;
 const MAGIC: &[u8; 8] = b"BALIKCOL";
 const FORMAT_VERSION: u32 = 1;
 
-// Stage 2: read by the scan path; Stage 1 just zeros the flags byte.
-#[allow(dead_code)]
 const FLAG_HAS_NULLS: u8 = 0b0000_0001;
 
 const LOGICAL_INT: u8 = 0;
@@ -92,7 +90,7 @@ fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
     match b {
         LOGICAL_INT => Ok(ColumnType::Int),
         LOGICAL_TEXT => Ok(ColumnType::Text),
-        other => Err(Error(format!("unknown logical type tag {other}"))),
+        other => Err(Error::corrupt(format!("unknown logical type tag {other}"))),
     }
 }
 
@@ -122,20 +120,20 @@ pub fn write_empty(path: &Path, ty: ColumnType) -> Result<(), Error> {
 /// magic and format version.
 fn parse_header(bytes: &[u8], path: &Path) -> Result<Header, Error> {
     if bytes.len() < HEADER_SIZE {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' shorter than {HEADER_SIZE}-byte header",
             path.display()
         )));
     }
     if &bytes[0..8] != MAGIC {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' has bad magic",
             path.display()
         )));
     }
     let format_version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     if format_version > FORMAT_VERSION {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' uses format_version {format_version}, this binary supports {FORMAT_VERSION}",
             path.display()
         )));
@@ -196,7 +194,7 @@ fn encode_int_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
         let n = match v {
             Value::Int(n) => *n,
             Value::Null => 0,
-            Value::Text(_) => return Err(Error("INT column received a TEXT value".to_string())),
+            Value::Text(_) => return Err(Error::invalid_value("INT column received a TEXT value")),
         };
         out.extend_from_slice(&n.to_le_bytes());
     }
@@ -210,10 +208,10 @@ fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
         match v {
             Value::Text(s) => blob.extend_from_slice(s.as_bytes()),
             Value::Null => {}
-            Value::Int(_) => return Err(Error("TEXT column received an INT value".to_string())),
+            Value::Int(_) => return Err(Error::invalid_value("TEXT column received an INT value")),
         }
         let end = u32::try_from(blob.len())
-            .map_err(|_| Error("TEXT column exceeds the 4 GiB limit".to_string()))?;
+            .map_err(|_| Error::invalid_value("TEXT column exceeds the 4 GiB limit"))?;
         offsets.extend_from_slice(&end.to_le_bytes());
     }
     offsets.extend_from_slice(&blob);
@@ -223,7 +221,7 @@ fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
 /// Build the whole byte image (header + data area) for a column of `values`.
 fn encode_column(ty: ColumnType, values: &[Value]) -> Result<Vec<u8>, Error> {
     let row_count = u32::try_from(values.len())
-        .map_err(|_| Error("row group exceeds the u32 row-count limit".to_string()))?;
+        .map_err(|_| Error::invalid_value("row group exceeds the u32 row-count limit"))?;
     let null_count = values.iter().filter(|v| matches!(v, Value::Null)).count() as u32;
     let has_nulls = null_count > 0;
 
@@ -252,7 +250,7 @@ fn decode_int_raw(
     path: &Path,
 ) -> Result<Vec<Value>, Error> {
     if data.len() < row_count * 8 {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' INT data is truncated",
             path.display()
         )));
@@ -277,7 +275,7 @@ fn decode_text_raw(
 ) -> Result<Vec<Value>, Error> {
     let offs_len = row_count * 4;
     if data.len() < offs_len {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' TEXT offsets are truncated",
             path.display()
         )));
@@ -288,14 +286,14 @@ fn decode_text_raw(
     for i in 0..row_count {
         let end = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
         if end < start || end > blob.len() {
-            return Err(Error(format!(
+            return Err(Error::corrupt(format!(
                 "column file '{}' has an out-of-range TEXT offset",
                 path.display()
             )));
         }
         if is_present(present, i) {
             let s = std::str::from_utf8(&blob[start..end])
-                .map_err(|_| Error(format!("column file '{}' has invalid UTF-8", path.display())))?
+                .map_err(|_| Error::corrupt(format!("column file '{}' has invalid UTF-8", path.display())))?
                 .to_string();
             out.push(Value::Text(s));
         } else {
@@ -327,7 +325,7 @@ pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
     let (present, data) = if header.has_nulls() {
         let bm_len = row_count.div_ceil(8);
         if data.len() < bm_len {
-            return Err(Error(format!(
+            return Err(Error::corrupt(format!(
                 "column file '{}' presence bitmap is truncated",
                 path.display()
             )));
@@ -338,7 +336,7 @@ pub fn read_column(path: &Path) -> Result<Vec<Value>, Error> {
     };
 
     if header.physical_encoding != PHYSICAL_RAW {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "column file '{}' uses unsupported physical encoding {}",
             path.display(),
             header.physical_encoding

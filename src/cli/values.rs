@@ -22,7 +22,7 @@ use crate::storage::{Record, Value};
 pub fn parse_values(schema: &Schema, s: &str) -> Result<Record, Error> {
     let tokens: Vec<&str> = s.split(',').collect();
     if tokens.len() != schema.columns.len() {
-        return Err(Error(format!(
+        return Err(Error::invalid_value(format!(
             "expected {} value(s) to match the schema, got {}",
             schema.columns.len(),
             tokens.len()
@@ -39,7 +39,7 @@ pub fn parse_values(schema: &Schema, s: &str) -> Result<Record, Error> {
         }
         let value = match col.ty {
             ColumnType::Int => Value::Int(t.parse::<i64>().map_err(|_| {
-                Error(format!("column '{}' expects an INT, got '{t}'", col.name))
+                Error::invalid_value(format!("column '{}' expects an INT, got '{t}'", col.name))
             })?),
             ColumnType::Text => Value::Text(t.to_string()),
         };

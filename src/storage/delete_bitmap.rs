@@ -90,20 +90,20 @@ pub fn write_empty(path: &Path, row_group_size: u32) -> Result<(), Error> {
 pub fn read_header(path: &Path) -> Result<Header, Error> {
     let bytes = fs::read(path).map_err(|e| Error::io("read delete bitmap", e))?;
     if bytes.len() < HEADER_SIZE {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "delete bitmap '{}' shorter than {HEADER_SIZE}-byte header",
             path.display()
         )));
     }
     if &bytes[0..8] != MAGIC {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "delete bitmap '{}' has bad magic",
             path.display()
         )));
     }
     let format_version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     if format_version > FORMAT_VERSION {
-        return Err(Error(format!(
+        return Err(Error::corrupt(format!(
             "delete bitmap '{}' uses format_version {format_version}, this binary supports {FORMAT_VERSION}",
             path.display()
         )));

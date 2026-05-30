@@ -53,7 +53,7 @@ fn col_path(rg_dir: &Path, col_name: &str) -> PathBuf {
 /// bytes are written, so a malformed row never reaches the column files.
 fn validate_record(schema: &Schema, record: &Record) -> Result<(), Error> {
     if record.values.len() != schema.columns.len() {
-        return Err(Error(format!(
+        return Err(Error::invalid_value(format!(
             "record has {} value(s) but the table has {} column(s)",
             record.values.len(),
             schema.columns.len()
@@ -63,7 +63,7 @@ fn validate_record(schema: &Schema, record: &Record) -> Result<(), Error> {
         match (value, col.ty) {
             (Value::Null, _) => {
                 if !col.nullable {
-                    return Err(Error(format!(
+                    return Err(Error::invalid_value(format!(
                         "column '{}' is NOT NULL but received NULL",
                         col.name
                     )));
@@ -71,7 +71,7 @@ fn validate_record(schema: &Schema, record: &Record) -> Result<(), Error> {
             }
             (Value::Int(_), ColumnType::Int) | (Value::Text(_), ColumnType::Text) => {}
             _ => {
-                return Err(Error(format!(
+                return Err(Error::invalid_value(format!(
                     "value for column '{}' does not match type {}",
                     col.name,
                     col.ty.as_str()
@@ -95,25 +95,25 @@ impl ColumnStore {
         match status(db_root) {
             Status::Ok { .. } => {}
             Status::Missing => {
-                return Err(Error(format!(
+                return Err(Error::other(format!(
                     "'{}' is not an initialized balik database — run `init` first",
                     db_root.display()
                 )));
             }
             Status::Unreadable => {
-                return Err(Error(format!(
+                return Err(Error::corrupt(format!(
                     "balik.meta at '{}' is corrupt or unreadable",
                     db_root.display()
                 )));
             }
             Status::WrongMagic => {
-                return Err(Error(format!(
+                return Err(Error::other(format!(
                     "'{}' is not a balik database",
                     db_root.display()
                 )));
             }
             Status::TooNew { found, supported } => {
-                return Err(Error(format!(
+                return Err(Error::corrupt(format!(
                     "database at '{}' uses format version {found}, this binary supports {supported}",
                     db_root.display()
                 )));

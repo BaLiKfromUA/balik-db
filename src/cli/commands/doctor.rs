@@ -10,7 +10,7 @@ pub fn run(path: &Path) -> Result<(), Error> {
     let mut out = std::io::stdout();
     let all_ok = diagnose(&mut out, path)?;
     if !all_ok {
-        return Err(Error("one or more diagnostic checks failed".to_string()));
+        return Err(Error::other("one or more diagnostic checks failed"));
     }
     Ok(())
 }

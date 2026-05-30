@@ -74,13 +74,13 @@ pub fn initialize(path: &Path) -> Result<(), Error> {
     if path.exists() {
         match status(path) {
             Status::Ok { .. } | Status::TooNew { .. } => {
-                return Err(Error(format!(
+                return Err(Error::other(format!(
                     "directory '{}' is already an initialized balik database",
                     path.display()
                 )));
             }
             Status::Missing | Status::Unreadable | Status::WrongMagic => {
-                return Err(Error(format!(
+                return Err(Error::other(format!(
                     "path '{}' already exists and is not a balik database — refusing to overwrite",
                     path.display()
                 )));
@@ -89,20 +89,20 @@ pub fn initialize(path: &Path) -> Result<(), Error> {
     }
 
     tracing::debug!(path = %path.display(), "creating database directory");
-    fs::create_dir_all(path).map_err(|e| Error(format!("failed to create directory: {e}")))?;
+    fs::create_dir_all(path).map_err(|e| Error::io("create database directory", e))?;
 
     let meta = Metadata {
         magic: MAGIC.to_string(),
         format_version: FORMAT_VERSION,
         created: timestamp(),
     };
-    let serialized =
-        toml::to_string(&meta).map_err(|e| Error(format!("failed to serialize metadata: {e}")))?;
+    let serialized = toml::to_string(&meta)
+        .map_err(|e| Error::other(format!("failed to serialize metadata: {e}")))?;
     let wrapped = checksum::wrap(serialized.as_bytes());
 
     let meta_path = path.join(METADATA_FILE);
     tracing::debug!(path = %meta_path.display(), "writing metadata file");
-    fs::write(&meta_path, wrapped).map_err(|e| Error(format!("failed to write metadata: {e}")))?;
+    fs::write(&meta_path, wrapped).map_err(|e| Error::io("write metadata", e))?;
 
     tracing::info!(path = %path.display(), "database initialized");
     Ok(())

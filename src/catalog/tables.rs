@@ -116,20 +116,19 @@ impl Catalog {
         }
         tracing::debug!(path = %path.display(), "loading catalog");
         let bytes = fs::read(&path).map_err(|e| Error::io("read catalog.toml", e))?;
-        let body = checksum::verify(&bytes)
-            .map_err(|e| Error::invalid_schema(format!("catalog.toml: {e}")))?;
+        let body = checksum::verify(&bytes).map_err(|e| e.context("catalog.toml"))?;
         let content = std::str::from_utf8(body)
-            .map_err(|_| Error::invalid_schema("catalog.toml is not valid UTF-8".to_string()))?;
-        let file: CatalogFile = toml::from_str(content)
-            .map_err(|e| Error::invalid_schema(format!("catalog.toml: {e}")))?;
+            .map_err(|_| Error::corrupt("catalog.toml is not valid UTF-8"))?;
+        let file: CatalogFile =
+            toml::from_str(content).map_err(|e| Error::corrupt(format!("catalog.toml: {e}")))?;
         if file.storage_track != STORAGE_TRACK {
-            return Err(Error::invalid_schema(format!(
+            return Err(Error::corrupt(format!(
                 "catalog storage_track is '{}', expected '{STORAGE_TRACK}'",
                 file.storage_track
             )));
         }
         if file.format_version > FORMAT_VERSION {
-            return Err(Error::invalid_schema(format!(
+            return Err(Error::corrupt(format!(
                 "catalog format_version {} is newer than supported ({FORMAT_VERSION})",
                 file.format_version
             )));
@@ -159,7 +158,7 @@ impl Catalog {
             tables: self.tables.values().cloned().collect(),
         };
         let serialized = toml::to_string(&file)
-            .map_err(|e| Error::invalid_schema(format!("serialize catalog: {e}")))?;
+            .map_err(|e| Error::other(format!("serialize catalog: {e}")))?;
         let wrapped = checksum::wrap(serialized.as_bytes());
         let path = self.root.join(CATALOG_FILE);
         tracing::debug!(path = %path.display(), bytes = wrapped.len(), "writing catalog");
@@ -275,18 +274,17 @@ impl Catalog {
         let path = self.manifest_path(name)?;
         tracing::debug!(table = %name, path = %path.display(), "reading manifest");
         let bytes = fs::read(&path).map_err(|e| Error::io("read manifest.toml", e))?;
-        let body = checksum::verify(&bytes)
-            .map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))?;
+        let body = checksum::verify(&bytes).map_err(|e| e.context("manifest.toml"))?;
         let content = std::str::from_utf8(body)
-            .map_err(|_| Error::invalid_schema("manifest.toml is not valid UTF-8".to_string()))?;
-        toml::from_str(content).map_err(|e| Error::invalid_schema(format!("manifest.toml: {e}")))
+            .map_err(|_| Error::corrupt("manifest.toml is not valid UTF-8"))?;
+        toml::from_str(content).map_err(|e| Error::corrupt(format!("manifest.toml: {e}")))
     }
 
     /// Serialize `manifest`, wrap it with a checksum, and replace its file
     /// atomically.
     fn write_manifest_atomic(path: &Path, manifest: &ManifestFile) -> Result<(), Error> {
         let serialized = toml::to_string(manifest)
-            .map_err(|e| Error::invalid_schema(format!("serialize manifest: {e}")))?;
+            .map_err(|e| Error::other(format!("serialize manifest: {e}")))?;
         let wrapped = checksum::wrap(serialized.as_bytes());
         fs_atomic::write(path, &wrapped, "manifest")
     }
