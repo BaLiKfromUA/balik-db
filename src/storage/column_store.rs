@@ -312,7 +312,9 @@ mod tests {
         std::fs::create_dir(&db).unwrap();
         std::fs::write(
             db.join("balik.meta"),
-            crate::checksum::wrap(b"magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n"),
+            crate::checksum::wrap(
+                b"magic = \"sqlite\"\nformat_version = 1\ncreated = \"unix:0\"\n",
+            ),
         )
         .unwrap();
         let err = ColumnStore::open(&db).unwrap_err();
@@ -419,7 +421,10 @@ mod tests {
         let h = store.open_table("users").unwrap();
 
         let r0 = store
-            .insert(&h, record(vec![Value::Int(1), Value::Text("alice".to_string())]))
+            .insert(
+                &h,
+                record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+            )
             .unwrap();
         let r1 = store
             .insert(&h, record(vec![Value::Int(2), Value::Null]))
@@ -429,7 +434,10 @@ mod tests {
 
         assert_eq!(
             store.get(&h, Rid(0)).unwrap(),
-            Some(record(vec![Value::Int(1), Value::Text("alice".to_string())]))
+            Some(record(vec![
+                Value::Int(1),
+                Value::Text("alice".to_string())
+            ]))
         );
         assert_eq!(
             store.get(&h, Rid(1)).unwrap(),
@@ -492,7 +500,10 @@ mod tests {
         let h = store.open_table("t").unwrap();
         for i in 0..5 {
             store
-                .insert(&h, record(vec![Value::Int(i), Value::Text(format!("n{i}"))]))
+                .insert(
+                    &h,
+                    record(vec![Value::Int(i), Value::Text(format!("n{i}"))]),
+                )
                 .unwrap();
         }
 
@@ -517,7 +528,10 @@ mod tests {
                 .unwrap();
             let h = store.open_table("users").unwrap();
             store
-                .insert(&h, record(vec![Value::Int(7), Value::Text("zed".to_string())]))
+                .insert(
+                    &h,
+                    record(vec![Value::Int(7), Value::Text("zed".to_string())]),
+                )
                 .unwrap();
         }
         let store = ColumnStore::open(&db).unwrap();

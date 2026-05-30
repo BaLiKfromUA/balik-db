@@ -93,7 +93,10 @@ mod tests {
     #[test]
     fn parses_ints_text_and_null() {
         let r = parse_values(&schema(), "1, alice").unwrap();
-        assert_eq!(r.values, vec![Value::Int(1), Value::Text("alice".to_string())]);
+        assert_eq!(
+            r.values,
+            vec![Value::Int(1), Value::Text("alice".to_string())]
+        );
         let r = parse_values(&schema(), "2,NULL").unwrap();
         assert_eq!(r.values, vec![Value::Int(2), Value::Null]);
     }
@@ -115,7 +118,10 @@ mod tests {
         // Nullability is enforced by the storage layer at insert time, not here:
         // "NULL" parses to Value::Null even for the NOT NULL `id` column.
         let r = parse_values(&schema(), "NULL,alice").unwrap();
-        assert_eq!(r.values, vec![Value::Null, Value::Text("alice".to_string())]);
+        assert_eq!(
+            r.values,
+            vec![Value::Null, Value::Text("alice".to_string())]
+        );
     }
 
     #[test]

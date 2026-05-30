@@ -293,7 +293,12 @@ fn decode_text_raw(
         }
         if is_present(present, i) {
             let s = std::str::from_utf8(&blob[start..end])
-                .map_err(|_| Error::corrupt(format!("column file '{}' has invalid UTF-8", path.display())))?
+                .map_err(|_| {
+                    Error::corrupt(format!(
+                        "column file '{}' has invalid UTF-8",
+                        path.display()
+                    ))
+                })?
                 .to_string();
             out.push(Value::Text(s));
         } else {
@@ -528,8 +533,12 @@ mod tests {
         // 3 INT rows, no NULLs: 56-byte header + 3 * 8 bytes, no bitmap.
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.col");
-        write_column(&path, ColumnType::Int, &[Value::Int(1), Value::Int(2), Value::Int(3)])
-            .unwrap();
+        write_column(
+            &path,
+            ColumnType::Int,
+            &[Value::Int(1), Value::Int(2), Value::Int(3)],
+        )
+        .unwrap();
         assert_eq!(fs::read(&path).unwrap().len(), HEADER_SIZE + 24);
     }
 
@@ -537,7 +546,8 @@ mod tests {
     fn write_column_rejects_value_of_wrong_type() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.col");
-        let err = write_column(&path, ColumnType::Int, &[Value::Text("x".to_string())]).unwrap_err();
+        let err =
+            write_column(&path, ColumnType::Int, &[Value::Text("x".to_string())]).unwrap_err();
         assert!(err.to_string().contains("INT column received a TEXT"));
     }
 
@@ -550,6 +560,11 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         bytes.truncate(bytes.len() - 8);
         fs::write(&path, bytes).unwrap();
-        assert!(read_column(&path).unwrap_err().to_string().contains("truncated"));
+        assert!(
+            read_column(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("truncated")
+        );
     }
 }

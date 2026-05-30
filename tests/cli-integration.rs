@@ -461,12 +461,28 @@ fn row_insert_get_persist_across_restart() {
         .success();
 
     balik_cli()
-        .args(["row-insert", "--db", db, "--table", "users", "--values", "1,Alice"])
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "1,Alice",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("rid 0"));
     balik_cli()
-        .args(["row-insert", "--db", db, "--table", "users", "--values", "2,NULL"])
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "2,NULL",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("rid 1"));
@@ -508,7 +524,15 @@ fn row_insert_null_into_not_null_column_fails() {
         .assert()
         .success();
     balik_cli()
-        .args(["row-insert", "--db", db, "--table", "users", "--values", "NULL,bob"])
+        .args([
+            "row-insert",
+            "--db",
+            db,
+            "--table",
+            "users",
+            "--values",
+            "NULL,bob",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("NOT NULL"));

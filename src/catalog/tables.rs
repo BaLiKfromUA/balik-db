@@ -157,8 +157,8 @@ impl Catalog {
             next_table_id: self.next_table_id,
             tables: self.tables.values().cloned().collect(),
         };
-        let serialized = toml::to_string(&file)
-            .map_err(|e| Error::other(format!("serialize catalog: {e}")))?;
+        let serialized =
+            toml::to_string(&file).map_err(|e| Error::other(format!("serialize catalog: {e}")))?;
         let wrapped = checksum::wrap(serialized.as_bytes());
         let path = self.root.join(CATALOG_FILE);
         tracing::debug!(path = %path.display(), bytes = wrapped.len(), "writing catalog");

@@ -164,7 +164,8 @@ mod tests {
         let db_path = tmp.path().join("testdb");
         fs::create_dir(&db_path).unwrap();
         let future = super::FORMAT_VERSION + 1;
-        let body = format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n");
+        let body =
+            format!("magic = \"balik-db\"\nformat_version = {future}\ncreated = \"unix:0\"\n");
         fs::write(db_path.join(METADATA_FILE), checksum::wrap(body.as_bytes())).unwrap();
 
         // Then
