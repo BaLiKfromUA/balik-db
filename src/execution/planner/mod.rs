@@ -1,0 +1,21 @@
+//! Logical planner: AST → `LogicalPlan`.
+//!
+//! The parser produces an AST that mirrors the query's syntax. The planner
+//! turns it into a tree of logical operators that says *what* to do — scan a
+//! table, filter it, project columns, sort, limit — and validates it against
+//! the catalog. It does not execute anything and reads no row data.
+
+mod binder;
+mod plan;
+
+pub use plan::LogicalPlan;
+
+use crate::error::Error;
+use crate::parser::ast::Statement;
+use crate::storage::Storage;
+
+/// Build a validated logical plan for `stmt`, using `storage`'s catalog to
+/// resolve and check table and column references.
+pub fn plan(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
+    binder::bind(stmt, storage)
+}
