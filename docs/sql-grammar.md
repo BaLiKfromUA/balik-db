@@ -81,11 +81,11 @@ These are left to a later binder / validation / execution layer:
 - whether a `WHERE` expression is well-typed / boolean-valued — the `Expr` type
   is intentionally permissive about operand shape.
 
-It also does not support (and rejects as `unsupported`): JOIN, GROUP BY, HAVING,
-DISTINCT, subqueries, `WITH`, `UNION`/set operations, multiple FROM tables,
+It also does not support (and rejects as `unsupported`): `JOIN`, `GROUP BY`, `HAVING`,
+`DISTINCT`, subqueries, `WITH`, `UNION`/set operations, multiple `FROM` tables,
 qualified names (`schema.table`, `table.column`), functions, multi-row or
-column-list INSERT, `OFFSET`, column options other than `NULL`/`NOT NULL`
-(DEFAULT, PRIMARY KEY, ...), table constraints, and other complex SQL.
+column-list `INSERT`, `OFFSET`, column options other than `NULL`/`NOT NULL`
+(`DEFAULT`, `PRIMARY KEY`, ...), table constraints, and other complex SQL.
 
 ## Running it
 
