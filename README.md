@@ -161,6 +161,41 @@ front-end only — it does not touch storage, the catalog, or run the query.
 
 ```bash
 ./balik-cli parse --query "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10"
+
+Select(
+    Select {
+        projections: Columns(
+            [
+                "id",
+                "name",
+            ],
+        ),
+        from: "users",
+        filter: Some(
+            Compare {
+                left: Column(
+                    "age",
+                ),
+                op: Gt,
+                right: Literal(
+                    Int(
+                        18,
+                    ),
+                ),
+            },
+        ),
+        order_by: Some(
+            OrderBy {
+                column: "name",
+                descending: false,
+            },
+        ),
+        limit: Some(
+            10,
+        ),
+    },
+)
+
 ```
 
 It prints the AST to stdout on success; on a malformed query it writes an error
