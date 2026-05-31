@@ -11,7 +11,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", features = ["tracing"] }
-rustyline = "18.0.0"
 serde = { version = "1", features = ["derive"] }
 sqlparser = "0.62.0"
 toml = "0.8"

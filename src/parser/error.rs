@@ -31,10 +31,6 @@ impl ParseError {
     pub fn unsupported(what: impl fmt::Display) -> Self {
         ParseError::new(format!("unsupported: {what}"))
     }
-
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 impl fmt::Display for ParseError {

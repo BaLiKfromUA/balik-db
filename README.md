@@ -154,6 +154,20 @@ balik-db doctor
 
 ```
 
+## SQL parsing
+
+The `parse` command turns a SQL string into an AST and prints it. It is a
+front-end only — it does not touch storage, the catalog, or run the query.
+
+```bash
+./balik-cli parse --query "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10"
+```
+
+It prints the AST to stdout on success; on a malformed query it writes an error
+(with an approximate line/column) to stderr and exits non-zero. The supported
+SQL subset, AST shape, and what the parser deliberately does *not* validate are
+documented in [docs/sql-grammar.md](docs/sql-grammar.md).
+
 ## Logging
 
 The CLI uses [`tracing`](https://docs.rs/tracing) for diagnostics, wired through [`clap-verbosity-flag`](https://docs.rs/clap-verbosity-flag). Logs are silent by default and go to stdout when enabled — raise the level with `-v` (repeatable):
@@ -197,6 +211,7 @@ src/
     values.rs          // CLI --values parser / record renderer (retired with SQL parser)
     commands/
       mod.rs
+      parse.rs         // parse a SQL query and print its AST
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
       table_create.rs  // create a table from a schema DSL
@@ -213,8 +228,11 @@ src/
     column_store.rs    // column-store implementation: insert / get / scan / update / delete
     column_file.rs     // .col header + INT raw / TEXT raw-or-dict data encoding
     delete_bitmap.rs   // per-row-group deletes.bm format
-  parser/              // stub — SQL lexer/parser (later stage)
-    mod.rs
+  parser/              // SQL front end: query string -> internal AST
+    mod.rs             // public parse() entry point + supported-subset docs
+    ast.rs             // internal AST (no third-party parser types leak out)
+    lower.rs           // sqlparser tree -> internal AST + structural validation
+    error.rs           // ParseError (independent of the storage Error)
   execution/           // stub — query planning and execution (later stage)
     mod.rs
 tests/

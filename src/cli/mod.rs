@@ -17,6 +17,14 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Parse a SQL query and print its AST. Does not touch storage; exits
+    /// non-zero with a message on stderr if the query cannot be parsed.
+    Parse {
+        /// The SQL query to parse, as a single string.
+        #[arg(long)]
+        query: String,
+    },
+
     Doctor {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,

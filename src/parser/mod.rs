@@ -40,9 +40,7 @@ pub fn parse(sql: &str) -> Result<Statement, ParseError> {
     match statements.len() {
         0 => Err(ParseError::new("empty input: expected a SQL statement")),
         1 => lower::lower_statement(statements.pop().unwrap()),
-        _ => Err(ParseError::new(
-            "expected a single SQL statement per query",
-        )),
+        _ => Err(ParseError::new("expected a single SQL statement per query")),
     }
 }
 
@@ -263,7 +261,7 @@ mod tests {
         let Statement::Select(s) = parse("SELECT id FROM t ORDER BY name DESC").unwrap() else {
             panic!("expected Select");
         };
-        assert_eq!(s.order_by.unwrap().descending, true);
+        assert!(s.order_by.unwrap().descending);
     }
 
     #[test]
@@ -287,15 +285,15 @@ mod tests {
     #[test]
     fn malformed_inputs_return_errors_without_panicking() {
         for q in [
-            "SELEC id FROM users",         // misspelled keyword
-            "SELECT FROM users",           // no projection
-            "INSERT INTO users VALUES",    // no values list
-            "CREATE TABLE users ()",       // no columns
-            "SELECT id users",             // missing FROM (parses as `id AS users`, no FROM)
-            "SELECT id FROM users WHERE",  // WHERE without expression
-            "SELECT id FROM users LIMIT",  // LIMIT without a number
-            "",                            // empty input
-            "   ",                         // whitespace only
+            "SELEC id FROM users",        // misspelled keyword
+            "SELECT FROM users",          // no projection
+            "INSERT INTO users VALUES",   // no values list
+            "CREATE TABLE users ()",      // no columns
+            "SELECT id users",            // missing FROM (parses as `id AS users`, no FROM)
+            "SELECT id FROM users WHERE", // WHERE without expression
+            "SELECT id FROM users LIMIT", // LIMIT without a number
+            "",                           // empty input
+            "   ",                        // whitespace only
         ] {
             assert!(parse(q).is_err(), "expected error for {q:?}");
         }

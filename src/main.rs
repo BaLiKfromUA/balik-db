@@ -23,6 +23,7 @@ fn main() -> ExitCode {
     tracing::debug!(?args.command, "dispatching command");
 
     let result: Result<(), Box<dyn std::error::Error>> = match args.command {
+        cli::Command::Parse { query } => cli::commands::parse::run(&query).map_err(Into::into),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
         cli::Command::TableCreate {

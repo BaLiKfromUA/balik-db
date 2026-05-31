@@ -226,14 +226,20 @@ fn lower_order_by(order_by: sql::OrderBy) -> Result<OrderBy> {
         .next()
         .ok_or_else(|| ParseError::new("ORDER BY requires a column"))?;
     if iter.next().is_some() {
-        return Err(ParseError::unsupported("ORDER BY with more than one column"));
+        return Err(ParseError::unsupported(
+            "ORDER BY with more than one column",
+        ));
     }
     if first.with_fill.is_some() {
         return Err(ParseError::unsupported("ORDER BY ... WITH FILL"));
     }
     let column = match first.expr {
         sql::Expr::Identifier(id) => id.value,
-        _ => return Err(ParseError::unsupported("ORDER BY on a non-column expression")),
+        _ => {
+            return Err(ParseError::unsupported(
+                "ORDER BY on a non-column expression",
+            ));
+        }
     };
     // `asc == Some(false)` means DESC; ASC and unspecified both sort ascending.
     let descending = first.options.asc == Some(false);
