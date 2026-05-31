@@ -22,6 +22,34 @@ use crate::storage::{
 
 const ROW_GROUPS_DIR: &str = "row_groups";
 
+/// Whole-database advisory lock file, held open for the lifetime of an open
+/// store. Lives in the db root next to `catalog.toml`.
+const LOCK_FILE: &str = "balik.lock";
+
+/// Take an exclusive advisory lock on the database for the lifetime of the
+/// returned file handle. The lock is held per open file description, so two
+/// processes (or two `ColumnStore`s) opening the same database can't interleave
+/// the read-modify-write cycles that the whole-file-rewrite layout depends on.
+/// It is released automatically when the handle is dropped or the process
+/// exits — even on a crash — so a killed process never leaves a stale lock.
+fn acquire_lock(db_root: &Path) -> Result<fs::File, Error> {
+    let path = db_root.join(LOCK_FILE);
+    let file = fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| Error::io("open database lock file", e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(Error::other(format!(
+            "database at '{}' is already open in another process",
+            db_root.display()
+        ))),
+        Err(fs::TryLockError::Error(e)) => Err(Error::io("lock database", e)),
+    }
+}
+
 /// Path of a row group directory within a table dir.
 fn row_group_dir(table_dir: &Path, group_id: u32) -> PathBuf {
     table_dir
@@ -87,6 +115,10 @@ fn validate_record(schema: &Schema, record: &Record) -> Result<(), Error> {
 #[derive(Debug)]
 pub struct ColumnStore {
     catalog: Catalog,
+    /// Held open for the store's lifetime; dropping it releases the
+    /// whole-database lock taken in `open`. Never read after acquisition.
+    #[allow(dead_code)]
+    lock: fs::File,
 }
 
 impl ColumnStore {
@@ -121,9 +153,94 @@ impl ColumnStore {
                 )));
             }
         }
-        Ok(Self {
+
+        // Lock before loading so the catalog read and the recovery rewrites
+        // below happen under the same exclusive hold.
+        let lock = acquire_lock(db_root)?;
+        let store = Self {
             catalog: Catalog::load(db_root)?,
-        })
+            lock,
+        };
+        store.recover()?;
+        Ok(store)
+    }
+
+    /// Repair any row group left half-written by a crash mid-insert. Run once
+    /// at open while the database lock is held, before any data-plane call.
+    fn recover(&self) -> Result<(), Error> {
+        let names: Vec<String> = self
+            .catalog
+            .list_tables()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        for name in names {
+            // A table whose manifest can't be read is already broken and can't
+            // be reconciled or used; skip it so one corrupt table doesn't fail
+            // the whole database open. The access path (and `doctor`) report it
+            // per-table. Once the manifest reads, a reconciliation error is a
+            // real repair failure and propagates.
+            let handle = match self.open_table(&name) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    tracing::warn!(
+                        table = %name,
+                        error = %e,
+                        "skipping crash recovery for unreadable table"
+                    );
+                    continue;
+                }
+            };
+            self.reconcile_open_group(&handle)?;
+        }
+        Ok(())
+    }
+
+    /// Reconcile a table's open (last) row group against the committed
+    /// `next_rid`.
+    ///
+    /// `insert` rewrites each column file under its own atomic rename and only
+    /// advances `next_rid` after every column is durable. A crash partway
+    /// through therefore leaves a prefix of the open group's columns carrying
+    /// one extra, uncommitted row while `next_rid` still points before it.
+    /// Truncating every column back to the committed length makes all columns
+    /// agree again and drops the half-written row, so `get`/`scan` never see a
+    /// torn row and never index past a short column.
+    fn reconcile_open_group(&self, table: &TableHandle) -> Result<(), Error> {
+        let rgs = u64::from(table.row_group_size);
+        let next_rid = self.catalog.describe_table(&table.name)?.next_rid;
+        let group = (next_rid / rgs) as u32;
+        let rg_dir = row_group_dir(&table.dir, group);
+        // The open group may not be materialized yet — an empty table, or a
+        // `next_rid` sitting exactly on a group boundary. Nothing to reconcile.
+        if !rg_dir.is_dir() {
+            return Ok(());
+        }
+        let expected = (next_rid % rgs) as usize;
+        let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
+        for col in &table.schema.columns {
+            let path = col_path(&rg_dir, &col.name);
+            let have = column_file::read_header(&path)?.row_count as usize;
+            if have == expected {
+                continue;
+            }
+            if have < expected {
+                return Err(Error::corrupt(format!(
+                    "column '{}' in row group {group} of table '{}' holds {have} rows but the catalog committed {expected}",
+                    col.name, table.name
+                )));
+            }
+            column_file::truncate_column(&path, col.ty, expected, &deletes)?;
+            tracing::warn!(
+                table = %table.name,
+                group,
+                column = %col.name,
+                had = have,
+                kept = expected,
+                "dropped uncommitted rows from open row group during crash recovery"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -212,8 +329,12 @@ impl Storage for ColumnStore {
             column_file::write_column(&path, col.ty, &values, &deletes)?;
         }
 
-        // Advance the allocator only after the row's data is durable, so a
-        // crash mid-insert never hands out a rid for a half-written row.
+        // Advance the allocator only after every column is durable. This commits
+        // the row: a crash before this point leaves the columns rewritten but
+        // `next_rid` unmoved, so the row is uncommitted. The column files are
+        // rewritten one atomic rename at a time, so a crash mid-loop can leave a
+        // prefix of columns one row longer than the rest — `reconcile_open_group`
+        // truncates them back to `next_rid` on the next open.
         self.catalog.set_next_rid(&table.name, rid + 1)?;
         tracing::debug!(table = %table.name, rid, "inserted row");
         Ok(Rid(rid))
@@ -355,8 +476,21 @@ impl ScanState {
             columns.push(values);
         }
         let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
-        // All columns in a group carry identical row counts; take the first.
+        // All columns in a group must carry identical row counts. A mismatch
+        // means corruption or an interrupted write that recovery didn't repair;
+        // surface it instead of indexing a short column out of bounds below.
         let row_count = columns.first().map_or(0, |c| c.len());
+        if let Some(bad) = columns.iter().position(|c| c.len() != row_count) {
+            return Err(Error::corrupt(format!(
+                "row group {} of '{}': column '{}' has {} rows but '{}' has {}",
+                self.current_group,
+                self.table_dir.display(),
+                self.columns[bad].name,
+                columns[bad].len(),
+                self.columns[0].name,
+                row_count,
+            )));
+        }
         self.loaded_group = Some(LoadedGroup {
             columns,
             deletes,
@@ -1106,5 +1240,82 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1.values[0], Value::Int(7));
         assert_eq!(rows[1].1.values[1], Value::Null);
+    }
+
+    #[test]
+    fn open_recovers_torn_insert_by_truncating_uncommitted_rows() {
+        let (_tmp, db) = init_db();
+        {
+            let mut store = ColumnStore::open(&db).unwrap();
+            store
+                .create_table("users", schema_users(), TableOptions::default())
+                .unwrap();
+            let h = store.open_table("users").unwrap();
+            store
+                .insert(
+                    &h,
+                    record(vec![Value::Int(1), Value::Text("alice".to_string())]),
+                )
+                .unwrap();
+        }
+
+        // Simulate a crash partway through the next insert: the id column was
+        // rewritten with an extra row, but the process died before name.col was
+        // rewritten and before next_rid advanced. The group is now torn — id
+        // has 2 rows, name has 1, next_rid is still 1.
+        let rg0 = db
+            .join("tables")
+            .join("00000001")
+            .join("row_groups")
+            .join("000000");
+        let id_path = rg0.join("id.col");
+        let (_, mut id_vals) = column_file::read_column(&id_path).unwrap();
+        id_vals.push(Value::Int(999));
+        column_file::write_column(&id_path, ColumnType::Int, &id_vals, &[]).unwrap();
+        assert_eq!(column_file::read_header(&id_path).unwrap().row_count, 2);
+
+        // Reopen runs recovery, which truncates id.col back to the committed row.
+        let mut store = ColumnStore::open(&db).unwrap();
+        let h = store.open_table("users").unwrap();
+        assert_eq!(column_file::read_header(&id_path).unwrap().row_count, 1);
+
+        // Scan no longer risks indexing past the short column and yields only
+        // the committed row.
+        let rows = collect_scan(&store, &h);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, Rid(0));
+        assert_eq!(
+            rows[0].1.values,
+            vec![Value::Int(1), Value::Text("alice".to_string())]
+        );
+
+        // The next insert reuses the freed rid and stays column-aligned.
+        let new = store
+            .insert(&h, record(vec![Value::Int(2), Value::Null]))
+            .unwrap();
+        assert_eq!(new, Rid(1));
+        assert_eq!(
+            store.get(&h, Rid(1)).unwrap(),
+            Some(record(vec![Value::Int(2), Value::Null]))
+        );
+    }
+
+    #[test]
+    fn open_rejects_a_second_concurrent_handle() {
+        let (_tmp, db) = init_db();
+        let _first = ColumnStore::open(&db).unwrap();
+        let err = ColumnStore::open(&db).unwrap_err();
+        assert!(
+            err.to_string().contains("already open in another process"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn lock_is_released_when_store_is_dropped() {
+        let (_tmp, db) = init_db();
+        drop(ColumnStore::open(&db).unwrap());
+        // The first handle released its lock on drop, so a fresh open succeeds.
+        ColumnStore::open(&db).unwrap();
     }
 }
