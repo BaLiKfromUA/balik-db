@@ -177,3 +177,10 @@ cardinality changes across the column-file's lifetime.
   encoding for each — but loses the ability for downstream code to assume
   "this column is always dict-coded." Filter pushdown that wants integer
   comparison has to handle both branches.
+- **TEXT only.** Dictionary encoding is the **sole** compression scheme in
+  the engine, and it applies **only to TEXT** columns. INT columns are always
+  stored as raw little-endian `i64`s (`physical_encoding = 0`) — they carry
+  [min/max stats](#int-minmax-header-stats) for future skip-pruning, but their
+  values are never compressed. Numeric compression (delta, frame-of-reference,
+  bit-packing) is a separate, unplanned encoding; the `physical_encoding` byte
+  has room for it without a `format_version` bump when it lands.

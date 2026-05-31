@@ -77,7 +77,7 @@ use std::path::Path;
 use crate::catalog::schema::ColumnType;
 use crate::error::Error;
 use crate::fs_atomic;
-use crate::storage::Value;
+use crate::storage::{Value, delete_bitmap};
 
 const HEADER_SIZE: usize = 56;
 const MAGIC: &[u8; 8] = b"BALIKCOL";
@@ -185,7 +185,7 @@ fn compute_int_range(values: &[Value], deleted: &[u8]) -> (i64, i64) {
     let mut max = i64::MIN;
     for (i, v) in values.iter().enumerate() {
         if let Value::Int(n) = v
-            && !is_offset_deleted(deleted, i)
+            && !delete_bitmap::is_deleted(deleted, i)
         {
             if *n < min {
                 min = *n;
@@ -196,17 +196,6 @@ fn compute_int_range(values: &[Value], deleted: &[u8]) -> (i64, i64) {
         }
     }
     (min, max)
-}
-
-/// LSB-first bit lookup into a delete bitmap. Offsets past the bitmap
-/// (including the always-true case where `deleted` is empty) are treated as
-/// live, matching `delete_bitmap::is_deleted`.
-fn is_offset_deleted(deleted: &[u8], offset: usize) -> bool {
-    let byte = offset / 8;
-    if byte >= deleted.len() {
-        return false;
-    }
-    deleted[byte] & (1u8 << (offset % 8)) != 0
 }
 
 /// Create a new `.col` file at `path` with an empty header.
@@ -581,6 +570,41 @@ pub fn write_column(
     tracing::debug!(path = %path.display(), rows = values.len(), "writing column file");
     let bytes = encode_column(ty, values, deleted)?;
     fs_atomic::write(path, &bytes, "column file")
+}
+
+/// Read and parse only the 56-byte header of a `.col` file, without decoding
+/// the data area. Crash recovery uses this to check a column's row count
+/// cheaply before deciding whether the file needs truncation.
+pub fn read_header(path: &Path) -> Result<Header, Error> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).map_err(|e| Error::io("open column file", e))?;
+    let mut buf = [0u8; HEADER_SIZE];
+    file.read_exact(&mut buf)
+        .map_err(|e| Error::io("read column header", e))?;
+    parse_header(&buf, path)
+}
+
+/// Drop the trailing rows of a `.col` file, keeping its first `new_len` rows,
+/// and rewrite the whole file atomically. `deleted` is the row group's delete
+/// bitmap so the rewritten INT min/max stats reflect live values. Errors if
+/// the file holds fewer than `new_len` rows — that is corruption, not a tail
+/// to trim.
+pub fn truncate_column(
+    path: &Path,
+    ty: ColumnType,
+    new_len: usize,
+    deleted: &[u8],
+) -> Result<(), Error> {
+    let (_, mut values) = read_column(path)?;
+    if values.len() < new_len {
+        return Err(Error::corrupt(format!(
+            "column file '{}' holds {} rows, cannot truncate to {new_len}",
+            path.display(),
+            values.len()
+        )));
+    }
+    values.truncate(new_len);
+    write_column(path, ty, &values, deleted)
 }
 
 /// Read and decode a `.col` file, returning its parsed header and every

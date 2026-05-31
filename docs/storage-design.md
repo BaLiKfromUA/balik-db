@@ -26,6 +26,7 @@ columns, which keeps the format easy to change.
 ```
 demo-db/
 ├── balik.meta                  # database bootstrap
+├── balik.lock                  # whole-database advisory lock (see Concurrency)
 ├── catalog.toml                # index of tables — atomically rewritten on each create/drop
 └── tables/
     └── 00000001/               # zero-padded table_id
@@ -129,13 +130,14 @@ file. We do **not** currently fsync the parent directory after rename, which
 means a power cut can lose the rename even though the file content is
 durable. Acceptable for a toy DB; documented as a known gap.
 
-A crash mid-insert can also leave row groups partially written across the
+A crash mid-insert can also leave a row group partially written across the
 N column files of a single row — each column file is rewritten atomically
-in isolation, but there is no cross-file transaction. The `next_rid`
-allocator is bumped only after every column file has landed, so a
-half-written row never receives a public RID; on recovery the trailing
-unreferenced bytes are ignored by `get` (offsets past `next_rid` return
-`None`).
+in isolation, but there is no cross-file transaction, so a crash partway
+through the per-column loop can leave a *prefix* of columns one row longer
+than the rest. The `next_rid` allocator is bumped only after every column
+file has landed, so the torn row is never committed — but the disagreeing
+column lengths would otherwise corrupt positional reads. See
+[Crash recovery on open](#crash-recovery-on-open) for how this is repaired.
 
 ### `manifest.toml` — table schema
 
@@ -480,4 +482,91 @@ Smaller mitigations possible without a WAL: a **batched insert** API
 (`&[Record]` → one column rewrite per batch instead of per row) and
 **group commit** of fsyncs across concurrent inserts. Neither changes the
 durability contract.
+
+## Concurrency
+
+balik-db is **single-writer per database**, enforced by a whole-database
+advisory lock. `ColumnStore::open` opens `balik.lock` in the database root
+and takes an exclusive lock on it (`std::fs::File::try_lock`, which maps to
+`flock(2)` on Unix); the handle is held for the lifetime of the open store
+and the lock is released when the store is dropped or the process exits.
+
+```text
+process A: open(db) ── holds balik.lock ──────────────► drop ─ releases
+process B:        open(db) → "already open in another process" (fails fast)
+```
+
+**Why a single exclusive lock.** Every mutating operation is a
+read-modify-write of whole files (the `.col` rewrite cycle, the `next_rid`
+bump in `manifest.toml`, the `catalog.toml` rewrite). Two processes
+interleaving those cycles would lose writes or tear a row group across
+columns — exactly the inconsistency the [crash recovery](#crash-recovery-on-open)
+pass repairs, but with no `next_rid` boundary to recover against. A single
+exclusive lock is the simplest thing that makes the whole-file-rewrite model
+correct under concurrent access.
+
+**Properties.**
+
+- The lock is **advisory** — it only blocks other openers that go through
+  `ColumnStore::open`. A process writing the files directly bypasses it.
+- It is held **per open file description**, so two `ColumnStore`s in the same
+  process (or two processes) contend correctly; the second `open` fails fast
+  rather than blocking.
+- It is released by the OS on process exit, **including a crash**, so a
+  killed process never leaves a stale lock that needs manual clearing.
+
+**Trade-offs we knowingly accept.**
+
+- **No concurrent readers.** The lock is exclusive even for read-only
+  commands (`table-scan`, `row-get`), so a long scan blocks an unrelated
+  read in another process. A future shared/exclusive (reader/writer) split
+  could let read-only opens take a shared lock; not worth it for a CLI-driven
+  toy DB today.
+- **Whole-database granularity.** The lock covers every table, not just the
+  one being written. Per-table locking would allow parallel writes to
+  independent tables but adds lock-ordering complexity we don't need yet.
+
+## Crash recovery on open
+
+Because a crash mid-insert can leave the open row group's column files with
+disagreeing lengths (a prefix of columns one row longer than the rest — see
+the [atomic write protocol](#catalogtoml--table-index)), `ColumnStore::open`
+runs a **reconciliation pass** once, while the database lock is held, before
+any data-plane call.
+
+For each table it locates the open (last) row group and compares every
+column's `row_count` against the committed length derived from `next_rid`:
+
+```text
+group     = next_rid / row_group_size
+expected  = next_rid % row_group_size      (live rows the catalog committed)
+```
+
+- **`row_count == expected`** — clean; nothing to do (the common path, and a
+  cheap header-only read, no full decode).
+- **`row_count > expected`** — an uncommitted torn insert. The column is
+  truncated back to `expected` rows and rewritten (atomic tmp+fsync+rename),
+  dropping the half-written tail so all columns re-agree.
+- **`row_count < expected`** — a column shorter than the catalog committed.
+  This can't result from the insert protocol; it is treated as corruption
+  and fails the open.
+
+A table whose `manifest.toml` can't be read is **skipped** (logged), not
+treated as fatal: it is already broken and can't be reconciled or used, so
+failing the whole-database open over one bad table would lose access to every
+healthy table. The access path — and `doctor` — report it per-table instead.
+
+Defense in depth: even after recovery, `scan` validates that all columns in a
+loaded row group have equal length and surfaces a corruption error rather
+than indexing a short column out of bounds.
+
+### Known gaps
+
+- The reconciliation only inspects the **open** row group of each table.
+  Sealed row groups are immutable once full, so they can't be torn by an
+  insert — but on-disk bit rot in a sealed group is caught lazily by the
+  per-file checksums / decode checks at read time, not eagerly on open.
+- There is no parent-directory fsync after the recovery rewrites (same
+  accepted gap as every other write — see the
+  [atomic write protocol](#catalogtoml--table-index)).
 
