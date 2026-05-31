@@ -96,4 +96,4 @@ balik-cli parse --query "SELECT id, name FROM users WHERE age > 18 ORDER BY name
 Prints the AST to stdout. On a parse error the message goes to **stderr** and
 the process exits non-zero. Syntax errors carry an approximate `Line/Column`;
 structural errors raised during lowering append the nearest identifier as
-`(near \`name\`)`. The parser never panics on malformed input.
+`(near 'name')`. The parser never panics on malformed input.
