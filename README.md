@@ -211,7 +211,7 @@ src/
   storage/             // storage trait + column-store implementation
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
     column_store.rs    // column-store implementation: insert / get / scan / update / delete
-    column_file.rs     // .col header + raw INT / raw TEXT data-area encoding
+    column_file.rs     // .col header + INT raw / TEXT raw-or-dict data encoding
     delete_bitmap.rs   // per-row-group deletes.bm format
   parser/              // stub — SQL lexer/parser (later stage)
     mod.rs

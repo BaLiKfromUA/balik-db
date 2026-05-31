@@ -192,8 +192,9 @@ offset  size  field              value / notes
 0       8     magic              ASCII "BALIKCOL"
 8       4     format_version     u32 LE = 1
 12      1     logical_type       0 = INT, 1 = TEXT
-13      1     physical_encoding  0 = raw  (1 = dictionary, TEXT only — planned;
-                                  see storage-optimizations.md)
+13      1     physical_encoding  0 = raw, 1 = dictionary (TEXT only; chosen
+                                  per file by the encode-time size selector
+                                  — see storage-optimizations.md)
 14      1     flags              bit 0 = has_nulls; bits 1-7 reserved
 15      1     reserved
 16      4     row_count          u32 LE — rows in this file (incl. NULLs)
@@ -269,9 +270,11 @@ the value is `blob[start..end]` parsed as UTF-8 — so row 0 yields
 Total data area for this column: `1 + 16 + 8 = 25` bytes after the 56-byte
 header (`81` bytes on disk).
 
-Dictionary-encoded TEXT (`physical_encoding = 1`) is reserved here so a
-column can be switched without a file-format change; the design and status
-of that encoding live in [`storage-optimizations.md`](storage-optimizations.md).
+TEXT columns can also write the **dictionary** encoding
+(`physical_encoding = 1`): per-file `dict_count` + `dict_ends` + `dict_blob`
++ `codes`, chosen automatically when it's smaller than raw. The selector,
+layout, and trade-offs live in
+[`storage-optimizations.md`](storage-optimizations.md#dictionary-encoding-for-text).
 
 ### `deletes.bm` — per-row-group delete bitmap
 
@@ -291,9 +294,9 @@ offset  size  field             notes
 ```
 
 For the default `row_group_size = 8192` the file is exactly `24 + 1024 =
-1048` bytes at create time. Future `delete` / `update` paths will flip bits
-and use `deleted_count` as a fast skip check (see
-[Mutation model](#mutation-model-planned-for-future)).
+1048` bytes at create time. `delete` flips a bit and bumps
+`deleted_count`; `update` runs delete + insert (see
+[Mutation model](#mutation-model)).
 
 ### NULL handling
 
@@ -330,12 +333,12 @@ If we ever need variable-size row groups (e.g., for compaction or schema
 migrations), we add a `first_rid: u64` field to row group metadata then. The
 format's `format_version` field exists for exactly that kind of migration.
 
-**Stable across deletes.** Once delete/update arrive, a per-row-group delete
-bitmap will track holes. RIDs never shift or get reused — deleted rows leave
-gaps, the next insert gets `next_rid`, not the freed slot. See [Mutation
-model](#mutation-model-planned-for-future) below.
+**Stable across deletes.** A per-row-group delete bitmap tracks holes;
+RIDs never shift or get reused — deleted rows leave gaps and the next
+insert gets `next_rid`, not the freed slot. See [Mutation
+model](#mutation-model) below.
 
-## Mutation model (planned for future)
+## Mutation model
 
 `UPDATE` and `DELETE` share a single mechanism: a **per-row-group delete
 bitmap**.
@@ -387,12 +390,12 @@ Why a separate file:
 - Deletes are **per row** across all columns simultaneously, not per column.
   Storing the bitmap N times — once per `.col` header — would duplicate the
   same bits and create a consistency hazard if the copies ever disagreed.
-- The `.col` header is **write-once at seal time**. The delete bitmap is
-  **mutable** by definition. Mixing them forces rewriting the header on every
-  delete, which defeats append-only.
+- The delete bitmap is hot — every insert/scan reads it, every delete
+  rewrites it. Keeping it in its own small file means a delete only touches
+  a few bytes of disk (24-byte header + bitmap), not the whole column.
 
-The bitmap file gets its own atomic-write protocol (tmp + fsync + rename)
-when future logic starts mutating it.
+The bitmap file uses the same atomic-write protocol (tmp + fsync + rename)
+as every other file in the database.
 
 ## Logical vs physical types
 
