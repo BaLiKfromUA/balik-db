@@ -199,12 +199,17 @@ impl Storage for ColumnStore {
             materialize_row_group(&rg_dir, &table.schema.columns, table.row_group_size)?;
         }
 
+        // Load the row group's delete bitmap once so each column rewrite
+        // can exclude tombstoned offsets from its min/max stats. The bitmap
+        // never changes during an insert (deletes are a separate API call).
+        let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
+
         // Append the value to each column file by rewriting the whole file.
         for (i, col) in table.schema.columns.iter().enumerate() {
             let path = col_path(&rg_dir, &col.name);
             let (_, mut values) = column_file::read_column(&path)?;
             values.push(record.values[i].clone());
-            column_file::write_column(&path, col.ty, &values)?;
+            column_file::write_column(&path, col.ty, &values, &deletes)?;
         }
 
         // Advance the allocator only after the row's data is durable, so a
@@ -265,7 +270,8 @@ impl Storage for ColumnStore {
         let rgs = u64::from(table.row_group_size);
         let group = (rid.0 / rgs) as u32;
         let offset = (rid.0 % rgs) as usize;
-        let bm_path = row_group_dir(&table.dir, group).join(delete_bitmap::FILE_NAME);
+        let rg_dir = row_group_dir(&table.dir, group);
+        let bm_path = rg_dir.join(delete_bitmap::FILE_NAME);
         let (_, bitmap) = delete_bitmap::load(&bm_path)?;
         if delete_bitmap::is_deleted(&bitmap, offset) {
             return Err(Error::invalid_value(format!(
@@ -274,6 +280,21 @@ impl Storage for ColumnStore {
             )));
         }
         delete_bitmap::mark_deleted(&bm_path, offset)?;
+
+        // Refresh INT min/max for the affected group so future skip-pruning
+        // sees a tight live range. The bitmap is reloaded — mark_deleted
+        // updated it on disk — and each INT column is rewritten with the
+        // same data area, only its header stats change.
+        let (_, deletes) = delete_bitmap::load(&bm_path)?;
+        for col in &table.schema.columns {
+            if !matches!(col.ty, ColumnType::Int) {
+                continue;
+            }
+            let path = col_path(&rg_dir, &col.name);
+            let (_, values) = column_file::read_column(&path)?;
+            column_file::write_column(&path, col.ty, &values, &deletes)?;
+        }
+
         tracing::debug!(table = %table.name, rid = rid.0, "deleted row");
         Ok(())
     }
@@ -844,6 +865,43 @@ mod tests {
             .map(|(r, _)| r.0)
             .collect();
         assert_eq!(rids, vec![0, 2]);
+    }
+
+    #[test]
+    fn delete_refreshes_int_min_max_in_column_header() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        for n in [5i64, 1, 9] {
+            store
+                .insert(&h, record(vec![Value::Int(n), Value::Null]))
+                .unwrap();
+        }
+        let id_path = db
+            .join("tables")
+            .join("00000001")
+            .join("row_groups")
+            .join("000000")
+            .join("id.col");
+        let (header, _) = column_file::read_column(&id_path).unwrap();
+        assert_eq!(header.int_min(), Some(1));
+        assert_eq!(header.int_max(), Some(9));
+
+        // Tombstoning the extremes shrinks the live range.
+        store.delete(&h, Rid(2)).unwrap(); // 9
+        store.delete(&h, Rid(1)).unwrap(); // 1
+        let (header, _) = column_file::read_column(&id_path).unwrap();
+        assert_eq!(header.int_min(), Some(5));
+        assert_eq!(header.int_max(), Some(5));
+
+        // Deleting the last live row collapses the range to the sentinel.
+        store.delete(&h, Rid(0)).unwrap();
+        let (header, _) = column_file::read_column(&id_path).unwrap();
+        assert_eq!(header.int_min(), None);
+        assert_eq!(header.int_max(), None);
     }
 
     #[test]
