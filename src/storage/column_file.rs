@@ -831,8 +831,8 @@ mod tests {
     fn write_column_rejects_value_of_wrong_type() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.col");
-        let err = write_column(&path, ColumnType::Int, &[Value::Text("x".to_string())], &[])
-            .unwrap_err();
+        let err =
+            write_column(&path, ColumnType::Int, &[Value::Text("x".to_string())], &[]).unwrap_err();
         assert!(err.to_string().contains("INT column received a TEXT"));
     }
 
@@ -871,10 +871,7 @@ mod tests {
 
     #[test]
     fn int_min_max_equals_single_value() {
-        assert_eq!(
-            read_int_stats(&[Value::Int(99)], &[]),
-            (Some(99), Some(99))
-        );
+        assert_eq!(read_int_stats(&[Value::Int(99)], &[]), (Some(99), Some(99)));
     }
 
     #[test]
