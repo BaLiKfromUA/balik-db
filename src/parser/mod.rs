@@ -70,18 +70,39 @@ mod tests {
             vec![
                 ColumnDef {
                     name: "id".into(),
-                    ty: DataType::Int
+                    ty: DataType::Int,
+                    nullable: true,
                 },
                 ColumnDef {
                     name: "name".into(),
-                    ty: DataType::Text
+                    ty: DataType::Text,
+                    nullable: true,
                 },
                 ColumnDef {
                     name: "age".into(),
-                    ty: DataType::Int
+                    ty: DataType::Int,
+                    nullable: true,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn create_table_nullability() {
+        let Statement::CreateTable(ct) =
+            parse("CREATE TABLE users (id INT NOT NULL, name TEXT NULL, age INT)").unwrap()
+        else {
+            panic!("expected CreateTable");
+        };
+        let nullables: Vec<bool> = ct.columns.iter().map(|c| c.nullable).collect();
+        // explicit NOT NULL, explicit NULL, then unspecified (defaults nullable)
+        assert_eq!(nullables, vec![false, true, true]);
+    }
+
+    #[test]
+    fn create_table_unsupported_column_option_is_rejected() {
+        let err = parse("CREATE TABLE t (id INT DEFAULT 0)").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
     #[test]

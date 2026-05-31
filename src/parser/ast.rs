@@ -24,6 +24,9 @@ pub struct CreateTable {
 pub struct ColumnDef {
     pub name: String,
     pub ty: DataType,
+    /// Whether the column accepts NULL. Follows SQL convention: a column is
+    /// nullable unless declared `NOT NULL`. An explicit `NULL` is also honored.
+    pub nullable: bool,
 }
 
 /// The column types the parser recognizes. Mirrors the engine's logical types

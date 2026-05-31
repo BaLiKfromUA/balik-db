@@ -30,7 +30,8 @@ returned AST always means "fully understood".
 statement := create_table | insert | select
 
 create_table := CREATE TABLE name '(' column_def (',' column_def)* ')'
-column_def   := name type
+column_def   := name type [NULL | NOT NULL]    -- columns are nullable unless
+                                               -- declared NOT NULL
 type         := INT | TEXT                     -- INT also accepts INTEGER;
                                                -- TEXT also accepts VARCHAR/CHAR/STRING
 
@@ -57,8 +58,9 @@ Notes:
 
 `Statement` is one of `CreateTable`, `Insert`, `Select` (see `src/parser/ast.rs`):
 
-- `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType }> }`,
-  `DataType` ∈ `{ Int, Text }`.
+- `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType, nullable: bool }> }`,
+  `DataType` ∈ `{ Int, Text }`. `nullable` defaults to `true` and is set to
+  `false` by `NOT NULL`.
 - `Insert { table, values: Vec<Literal> }`, `Literal` ∈ `{ Int(i64), Text(String), Null }`.
 - `Select { projections, from, filter, order_by, limit }` where `projections`
   is `All` or `Columns(Vec<String>)`, `filter` is an optional `Expr`, `order_by`
@@ -80,7 +82,8 @@ These are left to a later binder / validation / execution layer:
 It also does not support (and rejects as `unsupported`): JOIN, GROUP BY, HAVING,
 DISTINCT, subqueries, `WITH`, `UNION`/set operations, multiple FROM tables,
 qualified names (`schema.table`, `table.column`), functions, multi-row or
-column-list INSERT, `OFFSET`, and other complex SQL.
+column-list INSERT, `OFFSET`, column options other than `NULL`/`NOT NULL`
+(DEFAULT, PRIMARY KEY, ...), table constraints, and other complex SQL.
 
 ## Running it
 

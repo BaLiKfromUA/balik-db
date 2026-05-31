@@ -41,18 +41,34 @@ fn lower_create_table(ct: sql::CreateTable) -> Result<CreateTable> {
     }
     let mut columns = Vec::with_capacity(ct.columns.len());
     for col in ct.columns {
-        if !col.options.is_empty() {
-            return Err(ParseError::unsupported(format!(
-                "column options/constraints on `{}` (NULL, NOT NULL, DEFAULT, ...)",
-                col.name
-            )));
-        }
+        let ty = lower_data_type(&col.data_type)?;
+        let nullable = lower_nullability(&col.name, col.options)?;
         columns.push(ColumnDef {
             name: col.name.value,
-            ty: lower_data_type(&col.data_type)?,
+            ty,
+            nullable,
         });
     }
     Ok(CreateTable { table, columns })
+}
+
+/// Read `NULL` / `NOT NULL` from a column's options. Columns are nullable by
+/// default (SQL convention); any other option (DEFAULT, UNIQUE, PRIMARY KEY,
+/// ...) is outside the supported subset and rejected.
+fn lower_nullability(name: &sql::Ident, options: Vec<sql::ColumnOptionDef>) -> Result<bool> {
+    let mut nullable = true;
+    for opt in options {
+        match opt.option {
+            sql::ColumnOption::Null => nullable = true,
+            sql::ColumnOption::NotNull => nullable = false,
+            other => {
+                return Err(ParseError::unsupported(format!(
+                    "column option `{other}` on `{name}` (only NULL / NOT NULL are supported)"
+                )));
+            }
+        }
+    }
+    Ok(nullable)
 }
 
 fn lower_data_type(ty: &sql::DataType) -> Result<DataType> {
