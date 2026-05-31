@@ -12,7 +12,7 @@ The base format reserves bytes for these features (`physical_encoding` tag,
 | Optimization | Status | Reader/consumer |
 |---|---|---|
 | [INT min/max stats](#int-minmax-header-stats) | implemented | future skip-pruning |
-| [Dictionary encoding for TEXT](#dictionary-encoding-for-text) | planned | scan + equality filter |
+| [Dictionary encoding for TEXT](#dictionary-encoding-for-text) | implemented | scan + equality filter |
 
 ---
 
@@ -91,16 +91,11 @@ existing column file.
 
 ## Dictionary encoding for TEXT
 
-**Status:** planned (S6 in the stage-2 implementation plan). The format
-hook is already in place — `physical_encoding = 1` is reserved for it in
-the `.col` header — but the encode/decode path is not implemented yet.
-
-### What it is
-
 Replace each row's TEXT value with a small integer code (`u32`) that
-indexes into a per-`.col`-file dictionary holding the distinct values. The
-dictionary itself is laid out as a mini raw-TEXT column (`u32` end-offsets
-+ concatenated UTF-8 blob).
+indexes into a per-`.col`-file dictionary holding the distinct values.
+The dictionary itself is laid out as a mini raw-TEXT column (`u32`
+end-offsets + concatenated UTF-8 blob). The encoding is selected per file
+at write time — see [Per-file selector](#per-file-selector) below.
 
 ### Why it fits a column store
 
@@ -116,7 +111,7 @@ dictionary itself is laid out as a mini raw-TEXT column (`u32` end-offsets
   `status = 'SHIPPED'` can be rewritten to a code comparison once per
   query — the per-row work is integer equality, not string equality.
 
-### On-disk layout sketch
+### On-disk layout
 
 When `physical_encoding = 1`, after the optional presence bitmap the data
 area is:
@@ -124,7 +119,7 @@ area is:
 ```text
 dict_count : u32 LE
 dict_ends  : u32 LE × dict_count        // end-offsets into the dict blob
-dict_blob  : UTF-8 bytes                 // distinct values, concatenated
+dict_blob  : UTF-8 bytes                 // distinct values, first-seen order
 codes      : u32 LE × row_count          // index into the dict; NULL rows store 0,
                                          //   masked by the presence bitmap
 ```
@@ -133,29 +128,52 @@ The dictionary section is exactly the raw-TEXT layout already implemented,
 just over distinct values. Decode of row `i`: read `codes[i]`, follow it
 into the dictionary.
 
-### Encoding selector rule
+### Per-file selector
 
-**TEXT → dictionary, INT → raw.** Documented and enforced at the single
-encode switch point in `column_file.rs`. Raw-TEXT decode is kept reachable
-so the `physical_encoding` tag stays meaningful and the format is
-reversible.
+Every TEXT write computes the exact encoded size for both candidate
+layouts, then writes whichever is smaller. An exact tie keeps raw — no
+decode indirection for no size win.
+
+```text
+raw_size  = row_count * 4 + sum(len(s)) over non-NULL rows
+dict_size = 4 + dict_count * 4 + sum(len(s)) over distinct rows + row_count * 4
+```
+
+The single encode pass builds the dictionary anyway (to know
+`dict_count` and the distinct blob length), so the estimate is exact and
+nearly free — no double encode, no heuristic threshold.
+
+Concrete examples:
+
+| Values | raw | dict | Chosen |
+|---|---|---|---|
+| `[]`, `[NULL, NULL]` | 0, 8 | 4, 12 | raw (degenerate cases) |
+| `["a", "b", "c", "d"]` (all distinct) | 20 | 40 | raw |
+| `["alice", "alice"]` (2 repeats) | 18 | 21 | raw — break-even is ~3 |
+| `["alice", "alice", "alice"]` | 27 | 25 | dict |
+| `["shipped"×3, "pending"×2]` | 49 | 39 | dict |
+
+So short low-volume columns naturally stay raw; the dict kicks in exactly
+when there's enough repetition to pay for the `codes` column.
 
 ### Maintenance model
 
 The dictionary is rebuilt from current values on every whole-file rewrite.
 This piggybacks on the existing rewrite-on-append model — no incremental
-dictionary state to maintain, no separate compaction step.
+dictionary state to maintain, no separate compaction step. The selector
+is re-run on every write too, so a column can flip raw↔dict as its
+cardinality changes across the column-file's lifetime.
 
 ### Trade-offs
 
-- **High-cardinality TEXT loses.** When most values are distinct, the
-  dictionary grows to ~row_count entries and the codes column adds 4 bytes
-  per row on top — net size goes up vs raw. A future selector pass could
-  measure cardinality and stay on raw, but the v1 rule is "TEXT always
-  dictionary" for simplicity.
 - **Whole-file dict rebuild per insert.** Same write-amplification curve
   as the rest of the column-store layer; bounded by `row_group_size`.
 - **No cross-row-group sharing.** Each `.col` file carries its own
   dictionary. A column with the same low-cardinality vocabulary across
   many row groups pays for the dictionary N times instead of once. Cross-
   group sharing needs schema-level state and isn't planned.
+- **Selector is per-file, not per-column.** A column that's
+  high-cardinality in one row group and low in another picks the right
+  encoding for each — but loses the ability for downstream code to assume
+  "this column is always dict-coded." Filter pushdown that wants integer
+  comparison has to handle both branches.

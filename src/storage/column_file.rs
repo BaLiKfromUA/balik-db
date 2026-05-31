@@ -51,6 +51,25 @@
 //! - **TEXT**: `row_count` little-endian `u32` end-offsets, then the
 //!   concatenated UTF-8 blob. Value `i` is `blob[end[i-1]..end[i]]` with
 //!   `end[-1] = 0`; NULL rows are zero-length.
+//!
+//! Dictionary encoding (`physical_encoding = 1`, TEXT only). TEXT columns
+//! pick raw vs dictionary per file at encode time — whichever produces
+//! fewer bytes wins; an exact tie keeps raw to avoid the decode
+//! indirection for no size win. The dictionary is rebuilt from current
+//! values on every whole-file rewrite — no incremental dict state. Data
+//! area after the optional presence bitmap:
+//!
+//! - `dict_count : u32 LE` — number of distinct non-NULL values.
+//! - `dict_ends  : u32 LE × dict_count` — end-offsets into `dict_blob`.
+//! - `dict_blob  : UTF-8 bytes` — distinct values concatenated, in
+//!   first-seen order; same shape as the raw-TEXT data area but over
+//!   distinct values.
+//! - `codes      : u32 LE × row_count` — index into `dict_ends`; NULL rows
+//!   store `0` (masked by the presence bitmap, so the value is never
+//!   consulted).
+//!
+//! See `docs/storage-optimizations.md` for the selector rationale and
+//! trade-offs.
 
 use std::fs;
 use std::path::Path;
@@ -69,6 +88,7 @@ const FLAG_HAS_NULLS: u8 = 0b0000_0001;
 const LOGICAL_INT: u8 = 0;
 const LOGICAL_TEXT: u8 = 1;
 const PHYSICAL_RAW: u8 = 0;
+const PHYSICAL_DICT: u8 = 1;
 
 /// Parsed view of a `.col` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +154,9 @@ fn parse_logical_type(b: u8) -> Result<ColumnType, Error> {
 /// Build a 56-byte empty header for a new `.col` file of the given type.
 /// INT columns get the sentinel pair (`min = i64::MAX`, `max = i64::MIN`)
 /// so an empty file reads back as "no live range." TEXT columns leave the
-/// slots zeroed — no stats are recorded for TEXT yet.
+/// slots zeroed — no stats are recorded for TEXT yet. The
+/// `physical_encoding` byte is raw by default; the TEXT writer in
+/// `encode_column` may overwrite it to dictionary once values are present.
 fn empty_header(ty: ColumnType) -> [u8; HEADER_SIZE] {
     let mut buf = [0u8; HEADER_SIZE];
     buf[0..8].copy_from_slice(MAGIC);
@@ -271,21 +293,86 @@ fn encode_int_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-fn encode_text_raw(values: &[Value]) -> Result<Vec<u8>, Error> {
-    let mut offsets = Vec::with_capacity(values.len() * 4);
-    let mut blob = Vec::new();
+/// Encode TEXT values, picking the smaller of raw and dictionary per file.
+/// Returns the chosen `physical_encoding` tag together with the encoded
+/// bytes (no header, no presence bitmap — caller assembles those).
+///
+/// A single pass over `values` builds the dictionary and tallies the
+/// non-NULL byte length, which is enough to compute the exact byte size of
+/// both candidate layouts:
+///
+/// - raw  = `row_count * 4 + sum(len(s))` over non-NULL rows
+/// - dict = `4 + dict_count * 4 + sum(len(s))` over **distinct** non-NULL
+///   rows `+ row_count * 4`
+///
+/// Dict wins for repeated values; raw wins when distinct count is close to
+/// row count (the codes column adds 4 bytes/row that dict never recovers).
+/// Ties keep raw.
+fn encode_text(values: &[Value]) -> Result<(u8, Vec<u8>), Error> {
+    use std::collections::HashMap;
+
+    let mut codes: Vec<u32> = Vec::with_capacity(values.len());
+    let mut index: HashMap<&str, u32> = HashMap::new();
+    let mut dict_strs: Vec<&str> = Vec::new();
+    let mut raw_blob_size: usize = 0;
     for v in values {
         match v {
-            Value::Text(s) => blob.extend_from_slice(s.as_bytes()),
-            Value::Null => {}
+            Value::Text(s) => {
+                raw_blob_size += s.len();
+                let code = if let Some(&c) = index.get(s.as_str()) {
+                    c
+                } else {
+                    let c = u32::try_from(dict_strs.len()).map_err(|_| {
+                        Error::invalid_value("TEXT dictionary exceeds the u32 entry limit")
+                    })?;
+                    index.insert(s.as_str(), c);
+                    dict_strs.push(s.as_str());
+                    c
+                };
+                codes.push(code);
+            }
+            Value::Null => codes.push(0),
             Value::Int(_) => return Err(Error::invalid_value("TEXT column received an INT value")),
         }
-        let end = u32::try_from(blob.len())
-            .map_err(|_| Error::invalid_value("TEXT column exceeds the 4 GiB limit"))?;
-        offsets.extend_from_slice(&end.to_le_bytes());
     }
-    offsets.extend_from_slice(&blob);
-    Ok(offsets)
+
+    let row_count = values.len();
+    let raw_size = row_count * 4 + raw_blob_size;
+    let dict_blob_size: usize = dict_strs.iter().map(|s| s.len()).sum();
+    let dict_size = 4 + dict_strs.len() * 4 + dict_blob_size + row_count * 4;
+
+    if dict_size < raw_size {
+        let dict_count = u32::try_from(dict_strs.len())
+            .map_err(|_| Error::invalid_value("TEXT dictionary exceeds the u32 entry limit"))?;
+        let mut out = Vec::with_capacity(dict_size);
+        out.extend_from_slice(&dict_count.to_le_bytes());
+        let mut blob = Vec::with_capacity(dict_blob_size);
+        for s in &dict_strs {
+            blob.extend_from_slice(s.as_bytes());
+            let end = u32::try_from(blob.len()).map_err(|_| {
+                Error::invalid_value("TEXT dictionary blob exceeds the 4 GiB limit")
+            })?;
+            out.extend_from_slice(&end.to_le_bytes());
+        }
+        out.extend_from_slice(&blob);
+        for code in &codes {
+            out.extend_from_slice(&code.to_le_bytes());
+        }
+        Ok((PHYSICAL_DICT, out))
+    } else {
+        let mut out = Vec::with_capacity(raw_size);
+        let mut blob = Vec::with_capacity(raw_blob_size);
+        for v in values {
+            if let Value::Text(s) = v {
+                blob.extend_from_slice(s.as_bytes());
+            }
+            let end = u32::try_from(blob.len())
+                .map_err(|_| Error::invalid_value("TEXT column exceeds the 4 GiB limit"))?;
+            out.extend_from_slice(&end.to_le_bytes());
+        }
+        out.extend_from_slice(&blob);
+        Ok((PHYSICAL_RAW, out))
+    }
 }
 
 /// Build the whole byte image (header + data area) for a column of `values`.
@@ -315,7 +402,11 @@ fn encode_column(ty: ColumnType, values: &[Value], deleted: &[u8]) -> Result<Vec
     }
     let data = match ty {
         ColumnType::Int => encode_int_raw(values)?,
-        ColumnType::Text => encode_text_raw(values)?,
+        ColumnType::Text => {
+            let (encoding, bytes) = encode_text(values)?;
+            buf[13] = encoding;
+            bytes
+        }
     };
     buf.extend_from_slice(&data);
     Ok(buf)
@@ -387,6 +478,92 @@ fn decode_text_raw(
     Ok(out)
 }
 
+fn decode_text_dict(
+    data: &[u8],
+    row_count: usize,
+    present: Option<&[u8]>,
+    path: &Path,
+) -> Result<Vec<Value>, Error> {
+    if row_count == 0 {
+        return Ok(Vec::new());
+    }
+    if data.len() < 4 {
+        return Err(Error::corrupt(format!(
+            "column file '{}' dictionary header is truncated",
+            path.display()
+        )));
+    }
+    let dict_count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+    let ends_start = 4;
+    let ends_end = ends_start + dict_count * 4;
+    if data.len() < ends_end {
+        return Err(Error::corrupt(format!(
+            "column file '{}' dictionary offsets are truncated",
+            path.display()
+        )));
+    }
+    let mut ends: Vec<usize> = Vec::with_capacity(dict_count);
+    for i in 0..dict_count {
+        let off = ends_start + i * 4;
+        ends.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize);
+    }
+    let blob_len = ends.last().copied().unwrap_or(0);
+    let blob_start = ends_end;
+    let blob_end = blob_start + blob_len;
+    if data.len() < blob_end {
+        return Err(Error::corrupt(format!(
+            "column file '{}' dictionary blob is truncated",
+            path.display()
+        )));
+    }
+    let blob = &data[blob_start..blob_end];
+    let mut dict: Vec<&str> = Vec::with_capacity(dict_count);
+    let mut start = 0usize;
+    for end in &ends {
+        if *end < start || *end > blob.len() {
+            return Err(Error::corrupt(format!(
+                "column file '{}' has an out-of-range dictionary offset",
+                path.display()
+            )));
+        }
+        let s = std::str::from_utf8(&blob[start..*end]).map_err(|_| {
+            Error::corrupt(format!(
+                "column file '{}' has invalid UTF-8 in the dictionary",
+                path.display()
+            ))
+        })?;
+        dict.push(s);
+        start = *end;
+    }
+    let codes_start = blob_end;
+    let codes_end = codes_start + row_count * 4;
+    if data.len() < codes_end {
+        return Err(Error::corrupt(format!(
+            "column file '{}' dictionary codes are truncated",
+            path.display()
+        )));
+    }
+    let mut out = Vec::with_capacity(row_count);
+    for i in 0..row_count {
+        if is_present(present, i) {
+            let off = codes_start + i * 4;
+            let code = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+            if code >= dict_count {
+                return Err(Error::corrupt(format!(
+                    "column file '{}' has dictionary code {} out of range (dict has {} entries)",
+                    path.display(),
+                    code,
+                    dict_count
+                )));
+            }
+            out.push(Value::Text(dict[code].to_string()));
+        } else {
+            out.push(Value::Null);
+        }
+    }
+    Ok(out)
+}
+
 /// Encode `values` for a column of type `ty` and replace the `.col` file at
 /// `path` atomically: write a sibling temp file, fsync it, then rename it
 /// into place so a crash leaves either the old image or the new one.
@@ -428,16 +605,17 @@ pub fn read_column(path: &Path) -> Result<(Header, Vec<Value>), Error> {
         (None, data)
     };
 
-    if header.physical_encoding != PHYSICAL_RAW {
-        return Err(Error::corrupt(format!(
-            "column file '{}' uses unsupported physical encoding {}",
-            path.display(),
-            header.physical_encoding
-        )));
-    }
-    let values = match header.logical_type {
-        ColumnType::Int => decode_int_raw(data, row_count, present, path)?,
-        ColumnType::Text => decode_text_raw(data, row_count, present, path)?,
+    let values = match (header.logical_type, header.physical_encoding) {
+        (ColumnType::Int, PHYSICAL_RAW) => decode_int_raw(data, row_count, present, path)?,
+        (ColumnType::Text, PHYSICAL_RAW) => decode_text_raw(data, row_count, present, path)?,
+        (ColumnType::Text, PHYSICAL_DICT) => decode_text_dict(data, row_count, present, path)?,
+        (ty, enc) => {
+            return Err(Error::corrupt(format!(
+                "column file '{}' has {} column with unsupported physical encoding {enc}",
+                path.display(),
+                ty.as_str()
+            )));
+        }
     };
     Ok((header, values))
 }
@@ -732,6 +910,84 @@ mod tests {
         // Slots stay zeroed for TEXT.
         assert!(h.min.iter().all(|&b| b == 0));
         assert!(h.max.iter().all(|&b| b == 0));
+    }
+
+    fn write_text_and_read_back(values: &[Value]) -> (Header, Vec<Value>) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("text.col");
+        write_column(&path, ColumnType::Text, values, &[]).unwrap();
+        let (h, decoded) = read_column(&path).unwrap();
+        (h, decoded)
+    }
+
+    #[test]
+    fn text_low_cardinality_picks_dict() {
+        let values = vec![
+            Value::Text("shipped".to_string()),
+            Value::Text("pending".to_string()),
+            Value::Text("shipped".to_string()),
+            Value::Text("pending".to_string()),
+            Value::Text("shipped".to_string()),
+        ];
+        let (h, decoded) = write_text_and_read_back(&values);
+        assert_eq!(h.physical_encoding, PHYSICAL_DICT);
+        assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn text_high_cardinality_picks_raw() {
+        let values = vec![
+            Value::Text("a".to_string()),
+            Value::Text("b".to_string()),
+            Value::Text("c".to_string()),
+            Value::Text("d".to_string()),
+        ];
+        let (h, decoded) = write_text_and_read_back(&values);
+        assert_eq!(h.physical_encoding, PHYSICAL_RAW);
+        assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn text_dict_round_trips_with_nulls() {
+        // Many repeats so dict wins; NULLs are masked by the presence bitmap
+        // and decode correctly regardless of the code stored for them.
+        let values = vec![
+            Value::Text("shipped".to_string()),
+            Value::Null,
+            Value::Text("shipped".to_string()),
+            Value::Text("pending".to_string()),
+            Value::Null,
+            Value::Text("shipped".to_string()),
+        ];
+        let (h, decoded) = write_text_and_read_back(&values);
+        assert_eq!(h.physical_encoding, PHYSICAL_DICT);
+        assert!(h.has_nulls());
+        assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn text_single_distinct_value_repeated_picks_dict() {
+        let values = vec![
+            Value::Text("alice".to_string()),
+            Value::Text("alice".to_string()),
+            Value::Text("alice".to_string()),
+        ];
+        let (h, decoded) = write_text_and_read_back(&values);
+        assert_eq!(h.physical_encoding, PHYSICAL_DICT);
+        assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn text_empty_and_all_null_pick_raw() {
+        // Empty: raw payload is 0 bytes vs dict's 4-byte dict_count header.
+        let (h, decoded) = write_text_and_read_back(&[]);
+        assert_eq!(h.physical_encoding, PHYSICAL_RAW);
+        assert!(decoded.is_empty());
+
+        // All-NULL: same reason — raw skips the dict_count header.
+        let (h, decoded) = write_text_and_read_back(&[Value::Null, Value::Null]);
+        assert_eq!(h.physical_encoding, PHYSICAL_RAW);
+        assert_eq!(decoded, vec![Value::Null, Value::Null]);
     }
 
     #[test]
