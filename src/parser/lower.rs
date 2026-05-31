@@ -35,9 +35,9 @@ fn lower_create_table(ct: sql::CreateTable) -> Result<CreateTable> {
     }
     let table = single_name(&ct.name)?;
     if ct.columns.is_empty() {
-        return Err(ParseError::new(
-            "CREATE TABLE requires at least one column definition",
-        ));
+        return Err(
+            ParseError::new("CREATE TABLE requires at least one column definition").near(&table),
+        );
     }
     let mut columns = Vec::with_capacity(ct.columns.len());
     for col in ct.columns {
@@ -100,19 +100,19 @@ fn lower_insert(ins: sql::Insert) -> Result<Insert> {
 
     let source = ins
         .source
-        .ok_or_else(|| ParseError::new("INSERT requires a VALUES clause"))?;
+        .ok_or_else(|| ParseError::new("INSERT requires a VALUES clause").near(&table))?;
     let rows = match *source.body {
         sql::SetExpr::Values(values) => values.rows,
         _ => return Err(ParseError::unsupported("INSERT ... SELECT")),
     };
     match rows.len() {
-        0 => return Err(ParseError::new("INSERT requires at least one value")),
+        0 => return Err(ParseError::new("INSERT requires at least one value").near(&table)),
         1 => {}
         _ => return Err(ParseError::unsupported("multi-row INSERT")),
     }
     let row = rows.into_iter().next().unwrap().content;
     if row.is_empty() {
-        return Err(ParseError::new("INSERT requires at least one value"));
+        return Err(ParseError::new("INSERT requires at least one value").near(&table));
     }
     let values = row
         .into_iter()
@@ -295,8 +295,17 @@ fn lower_expr(expr: sql::Expr) -> Result<Expr> {
     match expr {
         sql::Expr::Identifier(id) => Ok(Expr::Column(id.value)),
         sql::Expr::Nested(inner) => lower_expr(*inner),
-        sql::Expr::Value(_) => lower_literal(expr).map(Expr::Literal),
-        sql::Expr::UnaryOp { .. } => lower_literal(expr).map(Expr::Literal),
+        sql::Expr::Value(v) => lower_value(v.value).map(Expr::Literal),
+        // Only signed numeric literals (`-5`, `+5`) are values; other unary
+        // operators are routed to their own message below.
+        sql::Expr::UnaryOp {
+            op: sql::UnaryOperator::Minus | sql::UnaryOperator::Plus,
+            ..
+        } => lower_literal(expr).map(Expr::Literal),
+        sql::Expr::UnaryOp {
+            op: sql::UnaryOperator::Not,
+            ..
+        } => Err(ParseError::unsupported("NOT in WHERE")),
         sql::Expr::CompoundIdentifier(_) => Err(ParseError::unsupported(
             "qualified column references (table.column)",
         )),
@@ -307,34 +316,38 @@ fn lower_expr(expr: sql::Expr) -> Result<Expr> {
 
 fn lower_binary_op(left: sql::Expr, op: sql::BinaryOperator, right: sql::Expr) -> Result<Expr> {
     use sql::BinaryOperator as B;
-    let compare = |op| {
-        Ok(Expr::Compare {
-            left: Box::new(lower_expr(left.clone())?),
-            op,
-            right: Box::new(lower_expr(right.clone())?),
-        })
+    // Each operand is lowered exactly once: the comparison/logical arm is
+    // chosen first, then both sides are consumed. (Avoids cloning subtrees.)
+    let compare_op = match op {
+        B::Eq => Some(CompareOp::Eq),
+        B::NotEq => Some(CompareOp::NotEq),
+        B::Lt => Some(CompareOp::Lt),
+        B::LtEq => Some(CompareOp::LtEq),
+        B::Gt => Some(CompareOp::Gt),
+        B::GtEq => Some(CompareOp::GtEq),
+        _ => None,
     };
-    match op {
-        B::Eq => compare(CompareOp::Eq),
-        B::NotEq => compare(CompareOp::NotEq),
-        B::Lt => compare(CompareOp::Lt),
-        B::LtEq => compare(CompareOp::LtEq),
-        B::Gt => compare(CompareOp::Gt),
-        B::GtEq => compare(CompareOp::GtEq),
-        B::And => Ok(Expr::Logical {
+    if let Some(op) = compare_op {
+        return Ok(Expr::Compare {
             left: Box::new(lower_expr(left)?),
-            op: LogicalOp::And,
+            op,
             right: Box::new(lower_expr(right)?),
-        }),
-        B::Or => Ok(Expr::Logical {
-            left: Box::new(lower_expr(left)?),
-            op: LogicalOp::Or,
-            right: Box::new(lower_expr(right)?),
-        }),
-        other => Err(ParseError::unsupported(format!(
-            "operator `{other}` in WHERE"
-        ))),
+        });
     }
+    let logical_op = match op {
+        B::And => LogicalOp::And,
+        B::Or => LogicalOp::Or,
+        other => {
+            return Err(ParseError::unsupported(format!(
+                "operator `{other}` in WHERE"
+            )));
+        }
+    };
+    Ok(Expr::Logical {
+        left: Box::new(lower_expr(left)?),
+        op: logical_op,
+        right: Box::new(lower_expr(right)?),
+    })
 }
 
 /// Lower a literal value. Handles `-N` (parsed as a unary minus over a number)

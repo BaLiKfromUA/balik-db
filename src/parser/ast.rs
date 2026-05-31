@@ -80,6 +80,12 @@ pub struct OrderBy {
 }
 
 /// A boolean/scalar expression, as used in `WHERE`.
+///
+/// The shape is deliberately permissive: operands are arbitrary `Expr`s, so the
+/// type can represent trees that are not semantically meaningful (e.g. a
+/// comparison whose operand is itself a logical combination). Checking that an
+/// expression is well-typed and boolean-valued is a binder/validation concern,
+/// not the parser's — see `docs/sql-grammar.md`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// A column reference, e.g. `age`.

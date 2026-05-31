@@ -77,7 +77,9 @@ These are left to a later binder / validation / execution layer:
 - whether a table or column actually exists;
 - whether value count matches column count;
 - whether value types are compatible with column types;
-- nullability and constraint enforcement.
+- nullability and constraint enforcement;
+- whether a `WHERE` expression is well-typed / boolean-valued — the `Expr` type
+  is intentionally permissive about operand shape.
 
 It also does not support (and rejects as `unsupported`): JOIN, GROUP BY, HAVING,
 DISTINCT, subqueries, `WITH`, `UNION`/set operations, multiple FROM tables,
@@ -91,6 +93,7 @@ column-list INSERT, `OFFSET`, column options other than `NULL`/`NOT NULL`
 balik-cli parse --query "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10"
 ```
 
-Prints the AST to stdout. On a parse error the message (with an approximate
-`Line/Column` for syntax errors) goes to **stderr** and the process exits
-non-zero. The parser never panics on malformed input.
+Prints the AST to stdout. On a parse error the message goes to **stderr** and
+the process exits non-zero. Syntax errors carry an approximate `Line/Column`;
+structural errors raised during lowering append the nearest identifier as
+`(near \`name\`)`. The parser never panics on malformed input.

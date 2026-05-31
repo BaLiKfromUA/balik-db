@@ -301,6 +301,25 @@ mod tests {
         assert_eq!(s.limit, Some(10));
     }
 
+    #[test]
+    fn where_not_reports_not_specifically() {
+        // `NOT` is a unary operator, not a literal: the error should name it
+        // rather than complain about an invalid value.
+        let err = parse("SELECT id FROM t WHERE NOT active").unwrap_err();
+        assert!(err.to_string().contains("NOT"), "{err}");
+    }
+
+    #[test]
+    fn structural_errors_anchor_to_the_offending_name() {
+        // Errors raised during lowering attach the nearest identifier so the
+        // reader gets an approximate location.
+        let err = parse("CREATE TABLE users ()").unwrap_err();
+        assert!(err.to_string().contains("near `users`"), "{err}");
+
+        let err = parse("INSERT INTO people DEFAULT VALUES").unwrap_err();
+        assert!(err.to_string().contains("near `people`"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]
