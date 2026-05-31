@@ -17,6 +17,51 @@ fn init_db() -> (TempDir, std::path::PathBuf) {
 }
 
 #[test]
+fn parse_select_prints_ast() {
+    balik_cli()
+        .args([
+            "parse",
+            "--query",
+            "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Select"))
+        .stdout(predicate::str::contains("Columns"))
+        .stdout(predicate::str::contains("Compare"))
+        .stdout(predicate::str::contains("OrderBy"));
+}
+
+#[test]
+fn parse_create_table_prints_ast() {
+    balik_cli()
+        .args(["parse", "--query", "CREATE TABLE users (id INT, name TEXT)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CreateTable"))
+        .stdout(predicate::str::contains("Int"))
+        .stdout(predicate::str::contains("Text"));
+}
+
+#[test]
+fn parse_invalid_query_fails_with_stderr_message() {
+    balik_cli()
+        .args(["parse", "--query", "SELEC id FROM users"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+#[test]
+fn parse_unsupported_query_reports_unsupported() {
+    balik_cli()
+        .args(["parse", "--query", "SELECT a FROM x JOIN y ON x.id = y.id"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported"));
+}
+
+#[test]
 fn help_succeeds() {
     balik_cli()
         .arg("--help")
