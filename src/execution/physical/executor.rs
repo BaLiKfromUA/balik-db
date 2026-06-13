@@ -65,7 +65,12 @@ pub(super) fn execute_stream<'a>(
                 Ok(filter_batch(&batch, &mask))
             })))
         }
-        PhysicalPlan::ProjectionExec { .. } => Err(not_implemented("ProjectionExec")),
+        PhysicalPlan::ProjectionExec { columns, input } => {
+            let source = execute_stream(input, store)?;
+            Ok(Box::new(
+                source.map(move |batch| project_batch(&batch?, columns)),
+            ))
+        }
         PhysicalPlan::SortExec { .. } => Err(not_implemented("SortExec")),
         PhysicalPlan::LimitExec { .. } => Err(not_implemented("LimitExec")),
         PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => Err(
@@ -177,6 +182,25 @@ fn filter_batch(batch: &ColumnBatch, mask: &[bool]) -> ColumnBatch {
         names: batch.names.clone(),
         columns,
     }
+}
+
+/// Select `columns` from `batch`, in the given order, producing a new batch
+/// whose names are exactly `columns`. Errors if a requested column is not
+/// present in the input.
+fn project_batch(batch: &ColumnBatch, columns: &[String]) -> Result<ColumnBatch, Error> {
+    let mut projected = Vec::with_capacity(columns.len());
+    for name in columns {
+        let idx = batch.names.iter().position(|n| n == name).ok_or_else(|| {
+            Error::other(format!(
+                "projection references column '{name}' not present in the input"
+            ))
+        })?;
+        projected.push(batch.columns[idx].clone());
+    }
+    Ok(ColumnBatch {
+        names: columns.to_vec(),
+        columns: projected,
+    })
 }
 
 fn not_implemented(op: &str) -> Error {
@@ -565,5 +589,78 @@ mod tests {
         let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
         let batches = run_scan(&filter(label_cmp(CompareOp::Eq, "x"), scan), &store);
         assert_eq!(scanned_ids(&batches), vec![2]);
+    }
+
+    fn project(columns: Vec<&str>, input: PhysicalPlan) -> PhysicalPlan {
+        PhysicalPlan::ProjectionExec {
+            columns: columns.into_iter().map(Into::into).collect(),
+            input: Box::new(input),
+        }
+    }
+
+    #[test]
+    fn projection_exec_selects_and_reorders_columns() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("a")), (2, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&project(vec!["label", "id"], scan), &store);
+        assert_eq!(
+            batches[0].names,
+            vec!["label".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            batches[0].columns[0],
+            vec![Value::Text("a".into()), Value::Text("b".into())]
+        );
+        assert_eq!(batches[0].columns[1], vec![Value::Int(1), Value::Int(2)]);
+    }
+
+    #[test]
+    fn projection_exec_selects_a_subset() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("a")), (2, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&project(vec!["id"], scan), &store);
+        assert_eq!(batches[0].names, vec!["id".to_string()]);
+        assert_eq!(batches[0].columns.len(), 1);
+    }
+
+    #[test]
+    fn projection_exec_runs_after_filter() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("a")), (2, Some("b")), (3, Some("c"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let filtered = filter(id_cmp(CompareOp::GtEq, 2), scan);
+        let batches = run_scan(&project(vec!["label"], filtered), &store);
+        let labels: Vec<_> = batches.iter().flat_map(|b| b.columns[0].clone()).collect();
+        assert_eq!(
+            labels,
+            vec![Value::Text("b".into()), Value::Text("c".into())]
+        );
+    }
+
+    #[test]
+    fn projection_exec_unknown_column_errors() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("a"))]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let plan = project(vec!["ghost"], scan);
+        let mut stream = execute_stream(&plan, &store).unwrap();
+        assert!(stream.next().unwrap().is_err());
+    }
+
+    #[test]
+    fn execute_select_returns_rows_with_projected_columns() {
+        // The full relational path: scan → project → collected QueryResult::Rows.
+        let (_tmp, mut store) = store_with_labels(&[(1, Some("a")), (2, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let plan = project(vec!["label", "id"], scan);
+        let result = execute(&plan, &mut store).unwrap();
+        assert_eq!(
+            result,
+            QueryResult::Rows {
+                names: vec!["label".into(), "id".into()],
+                rows: vec![
+                    vec![Value::Text("a".into()), Value::Int(1)],
+                    vec![Value::Text("b".into()), Value::Int(2)],
+                ],
+            }
+        );
     }
 }
