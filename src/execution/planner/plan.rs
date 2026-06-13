@@ -22,6 +22,16 @@ use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalO
 /// A node in the logical plan. `CreateTable` and `Insert` are standalone roots;
 /// the relational operators (`Scan`, `Filter`, `Projection`, `Sort`, `Limit`)
 /// nest innermost → outermost, with `Scan` always at the leaf.
+///
+/// The leaf payloads — `ColumnDef`, `Literal`, and the `Expr` in a `Filter` —
+/// are the parser's AST types, reused here on purpose. These are stable,
+/// semantic value types with no behavior to re-model, so wrapping them in a
+/// parallel set of planner types would add boilerplate and conversions without
+/// buying anything. The structural work that distinguishes a plan from an AST
+/// happens in the *shape* of the tree (a SELECT becomes a nested
+/// `Scan → Filter → Projection → Sort → Limit`, not a copy of `Select`), not in
+/// the leaves. If the planner later needs to attach resolved/typed information
+/// to expressions, that is the point to introduce dedicated plan-side types.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum LogicalPlan {
     CreateTable {

@@ -61,6 +61,19 @@ Limit 10
 `SELECT *` expands to the table's columns under the `Projection`. `Filter`
 stores the WHERE expression verbatim; it is not evaluated here.
 
+## Reusing AST leaf types
+
+What makes a plan different from an AST is the **shape of the tree** — a SELECT
+becomes a nested `Scan → Filter → Projection → Sort → Limit`, not a copy of the
+`Select` struct. The leaf payloads, however, are reused from the parser's AST:
+`ColumnDef` (in `CreateTable`), `Literal` (in `Insert`), and the `Expr` carried
+by `Filter`. This is deliberate. They are stable, semantic value types with no
+behavior to re-model, so introducing a parallel set of planner types would add
+boilerplate and AST→plan conversions without buying anything. The natural point
+to introduce dedicated plan-side expression types is when the planner needs to
+attach resolved or type-checked information to expressions — which this stage
+does not.
+
 ## Validation
 
 - **CREATE TABLE** — table name is valid, column list is non-empty, no duplicate
