@@ -447,7 +447,12 @@ impl Storage for ColumnStore {
         // Resolve the projection to concrete column names in the requested
         // order; `None` decodes every column in schema order.
         let projected: Vec<String> = match projection {
-            None => table.schema.columns.iter().map(|c| c.name.clone()).collect(),
+            None => table
+                .schema
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
             Some(names) => {
                 for name in names {
                     if !table.schema.columns.iter().any(|c| &c.name == name) {
