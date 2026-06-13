@@ -12,6 +12,7 @@
 //! panicking, so partial builds stay runnable.
 
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::catalog::tables::TableOptions;
@@ -105,6 +106,20 @@ pub(super) fn execute_stream<'a>(
                 }
             })))
         }
+        PhysicalPlan::TopKExec {
+            column,
+            descending,
+            count,
+            input,
+        } => {
+            // Blocking, like Sort, but keeps only the best `count` rows in a
+            // bounded heap rather than sorting everything.
+            let source = execute_stream(input, store)?;
+            match top_k(source, column, *descending, *count)? {
+                Some(batch) => Ok(Box::new(std::iter::once(Ok(batch)))),
+                None => Ok(Box::new(std::iter::empty())),
+            }
+        }
         PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => Err(
             Error::other("DDL/DML operator cannot appear inside a query pipeline"),
         ),
@@ -120,7 +135,8 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         PhysicalPlan::ProjectionExec { columns, .. } => Ok(columns.clone()),
         PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::SortExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => output_columns(input),
+        | PhysicalPlan::LimitExec { input, .. }
+        | PhysicalPlan::TopKExec { input, .. } => output_columns(input),
         PhysicalPlan::TableScanExec {
             projection: Some(cols),
             ..
@@ -283,6 +299,97 @@ fn sort_batches(
         names,
         columns: sorted,
     }))
+}
+
+/// One candidate row in the top-K heap, ordered by *output position*: an item
+/// that should appear earlier in the result compares `Less`. Built on the shared
+/// [`order_values`], with the sort direction folded in so the heap logic is
+/// direction-agnostic.
+struct HeapItem {
+    key: Value,
+    descending: bool,
+    row: Vec<Value>,
+}
+
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ord = order_values(&self.key, &other.key);
+        if self.descending { ord.reverse() } else { ord }
+    }
+}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for HeapItem {}
+
+/// Drain `source` and keep the `count` rows that come first under the ordering,
+/// using a bounded max-heap: the heap holds at most `count` items, and whenever
+/// a new row beats the current worst-kept one (the heap's max), it replaces it.
+/// This is O(rows · log count) time and O(count) memory — never a full sort.
+///
+/// The key column must be present in the input (a selected column), as the
+/// projection sits below this operator. Returns `None` if the input was empty.
+fn top_k(
+    source: BatchStream<'_>,
+    column: &str,
+    descending: bool,
+    count: u64,
+) -> Result<Option<ColumnBatch>, Error> {
+    let k = usize::try_from(count).unwrap_or(usize::MAX);
+    let mut names: Option<Vec<String>> = None;
+    let mut key = 0;
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+
+    for batch in source {
+        let batch = batch?;
+        if names.is_none() {
+            key = batch.names.iter().position(|n| n == column).ok_or_else(|| {
+                Error::other(format!(
+                    "ORDER BY column '{column}' is not available; it must be one of the selected columns"
+                ))
+            })?;
+            names = Some(batch.names.clone());
+        }
+        for r in 0..batch.num_rows() {
+            if k == 0 {
+                break;
+            }
+            let item = HeapItem {
+                key: batch.columns[key][r].clone(),
+                descending,
+                row: batch.columns.iter().map(|c| c[r].clone()).collect(),
+            };
+            if heap.len() < k {
+                heap.push(item);
+            } else if item < *heap.peek().expect("heap is full, so non-empty") {
+                heap.pop();
+                heap.push(item);
+            }
+        }
+    }
+
+    let Some(names) = names else {
+        return Ok(None);
+    };
+
+    // `into_sorted_vec` yields ascending by `Ord`, i.e. output order.
+    let mut columns: Vec<Vec<Value>> = vec![Vec::new(); names.len()];
+    for item in heap.into_sorted_vec() {
+        for (col, value) in columns.iter_mut().zip(item.row) {
+            col.push(value);
+        }
+    }
+    Ok(Some(ColumnBatch { names, columns }))
 }
 
 /// Total order over values for sorting. NULLs sort before all non-null values
@@ -852,6 +959,72 @@ mod tests {
         let filtered = filter(id_cmp(CompareOp::Gt, 2), scan);
         let batches = run_scan(&limit(2, filtered), &store);
         assert_eq!(scanned_ids(&batches), vec![3, 4]);
+    }
+
+    fn topk(column: &str, descending: bool, count: u64, input: PhysicalPlan) -> PhysicalPlan {
+        PhysicalPlan::TopKExec {
+            column: column.into(),
+            descending,
+            count,
+            input: Box::new(input),
+        }
+    }
+
+    #[test]
+    fn top_k_keeps_smallest_ascending_across_batches() {
+        // Row groups of 2 → the heap must span batches: [5,3] [1,6] [2,4].
+        let (_tmp, store) = store_with_groups(&[5, 3, 1, 6, 2, 4]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&topk("id", false, 3, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn top_k_keeps_largest_descending() {
+        let (_tmp, store) = store_with_groups(&[5, 3, 1, 6, 2, 4]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&topk("id", true, 2, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![6, 5]);
+    }
+
+    #[test]
+    fn top_k_orders_by_text_column() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("c")), (2, Some("a")), (3, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&topk("label", false, 2, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![2, 3]);
+    }
+
+    #[test]
+    fn top_k_ascending_places_nulls_first() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("b")), (2, None), (3, Some("a"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&topk("label", false, 2, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![2, 3]);
+    }
+
+    #[test]
+    fn top_k_count_above_total_sorts_everything() {
+        let (_tmp, store) = store_with_groups(&[3, 1, 2]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&topk("id", false, 10, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn top_k_count_zero_is_empty() {
+        let (_tmp, store) = store_with_groups(&[3, 1, 2]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&topk("id", false, 0, scan), &store);
+        assert_eq!(scanned_ids(&batches), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn top_k_errors_when_column_not_in_input() {
+        let (_tmp, store) = store_with_labels(&[(1, Some("a"))]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let plan = topk("label", false, 1, scan);
+        assert!(execute_stream(&plan, &store).is_err());
     }
 
     #[test]

@@ -65,6 +65,15 @@ pub enum PhysicalPlan {
         count: u64,
         input: Box<PhysicalPlan>,
     },
+    /// Order by a column and keep only the first `count` rows — the fused form
+    /// of a `SortExec` directly under a `LimitExec`. Produced by lowering the
+    /// optimizer's `TopK`; runs as a bounded heap rather than a full sort.
+    TopKExec {
+        column: String,
+        descending: bool,
+        count: u64,
+        input: Box<PhysicalPlan>,
+    },
 }
 
 impl fmt::Display for PhysicalPlan {
@@ -134,6 +143,16 @@ impl PhysicalPlan {
             }
             PhysicalPlan::LimitExec { count, input } => {
                 writeln!(f, "{pad}LimitExec {count}")?;
+                input.fmt_indented(f, depth + 1)
+            }
+            PhysicalPlan::TopKExec {
+                column,
+                descending,
+                count,
+                input,
+            } => {
+                let dir = if *descending { " DESC" } else { "" };
+                writeln!(f, "{pad}TopKExec [{column}{dir}] {count}")?;
                 input.fmt_indented(f, depth + 1)
             }
         }
@@ -258,6 +277,20 @@ mod tests {
         assert_eq!(
             plan.to_string(),
             "TableScanExec users [id, name] prune=[age > 18]"
+        );
+    }
+
+    #[test]
+    fn top_k_renders_direction_and_count() {
+        let plan = PhysicalPlan::TopKExec {
+            column: "age".into(),
+            descending: true,
+            count: 5,
+            input: Box::new(scan()),
+        };
+        assert_eq!(
+            plan.to_string(),
+            "TopKExec [age DESC] 5\n  TableScanExec users"
         );
     }
 
