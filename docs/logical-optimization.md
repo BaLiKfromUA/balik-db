@@ -19,10 +19,36 @@ The optimizer is part of the `execution` module, beside the planner:
 
 - `src/execution/optimizer/mod.rs` — public entry point
   `optimize(plan) -> LogicalPlan`, re-exported as `execution::optimize`. It runs
-  the rules in a fixed order.
+  the rules in a fixed order: top-K first, then column pushdown — so pushdown
+  sees the fused `TopK` and still collects its ordering column.
+- `src/execution/optimizer/top_k.rs` — the top-K fusion rule.
 - `src/execution/optimizer/column_pushdown.rs` — the column-pushdown rule.
 
 ## Rules
+
+### Top-K
+
+`ORDER BY ... LIMIT n` does not need a full sort followed by a separate
+truncation — it only needs the `n` smallest or largest rows. This rule fuses a
+`Limit` sitting directly over a `Sort` into a single `TopK` node, so execution
+can keep just `n` rows as it scans rather than ordering the whole input.
+
+```
+SELECT id FROM users ORDER BY name LIMIT 10
+```
+
+```
+        before                          after
+
+Limit 10                         TopK [name] 10
+  Sort [name]                      Projection [id]
+    Projection [id]                  Scan users
+      Scan users
+```
+
+It only fires on that exact adjacency: a `Sort` with no `Limit`, or a `Limit`
+with no `Sort`, is left as-is. `TopK` is never produced by the binder — it exists
+only as an optimizer output.
 
 ### Column pushdown
 

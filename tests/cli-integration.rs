@@ -893,6 +893,40 @@ fn explain_logical_optimize_pushes_columns_onto_scan() {
 }
 
 #[test]
+fn explain_logical_optimize_fuses_sort_and_limit_into_topk() {
+    let (_tmp, db) = init_db_with_users();
+    // Without --optimize the ORDER BY and LIMIT are separate operators.
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT id FROM users ORDER BY name LIMIT 10",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Limit 10"))
+        .stdout(predicate::str::contains("Sort [name]"));
+
+    // With --optimize they collapse into a single TopK node.
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT id FROM users ORDER BY name LIMIT 10",
+            "--optimize",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TopK [name] 10"))
+        .stdout(predicate::str::contains("Limit").not())
+        .stdout(predicate::str::contains("Sort").not());
+}
+
+#[test]
 fn explain_logical_json_format_is_parseable() {
     let (_tmp, db) = init_db_with_users();
     let output = balik_cli()

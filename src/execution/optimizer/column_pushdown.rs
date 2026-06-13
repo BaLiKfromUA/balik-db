@@ -51,7 +51,7 @@ fn collect(plan: &LogicalPlan, projected: &mut Vec<String>, extra: &mut Vec<Stri
             collect_expr_columns(predicate, extra);
             collect(input, projected, extra)
         }
-        LogicalPlan::Sort { column, input, .. } => {
+        LogicalPlan::Sort { column, input, .. } | LogicalPlan::TopK { column, input, .. } => {
             extra.push(column.clone());
             collect(input, projected, extra)
         }
@@ -88,6 +88,17 @@ fn set_scan_columns(plan: LogicalPlan, columns: Vec<String>) -> LogicalPlan {
             input: Box::new(set_scan_columns(*input, columns)),
         },
         LogicalPlan::Limit { count, input } => LogicalPlan::Limit {
+            count,
+            input: Box::new(set_scan_columns(*input, columns)),
+        },
+        LogicalPlan::TopK {
+            column,
+            descending,
+            count,
+            input,
+        } => LogicalPlan::TopK {
+            column,
+            descending,
             count,
             input: Box::new(set_scan_columns(*input, columns)),
         },
@@ -172,6 +183,19 @@ mod tests {
         assert_eq!(
             plan.to_string(),
             "Sort [id]\n  Projection [id]\n    Filter [id > 1]\n      Scan users [id]"
+        );
+    }
+
+    #[test]
+    fn topk_ordering_column_is_pushed_onto_scan() {
+        // The full pipeline fuses the Sort+Limit into a TopK before column
+        // pushdown runs, so the ordering column must still reach the scan.
+        let (_tmp, store) = seeded_store();
+        let stmt = parser::parse("SELECT id FROM users ORDER BY name LIMIT 10").unwrap();
+        let plan = crate::execution::optimize(crate::execution::plan(&stmt, &store).unwrap());
+        assert_eq!(
+            plan.to_string(),
+            "TopK [name] 10\n  Projection [id]\n    Scan users [id, name]"
         );
     }
 

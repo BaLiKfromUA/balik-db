@@ -21,7 +21,9 @@ use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalO
 
 /// A node in the logical plan. `CreateTable` and `Insert` are standalone roots;
 /// the relational operators (`Scan`, `Filter`, `Projection`, `Sort`, `Limit`)
-/// nest innermost → outermost, with `Scan` always at the leaf.
+/// nest innermost → outermost, with `Scan` always at the leaf. `TopK` is never
+/// produced by the binder — the optimizer introduces it by fusing an adjacent
+/// `Sort` and `Limit`.
 ///
 /// The leaf payloads — `ColumnDef`, `Literal`, and the `Expr` in a `Filter` —
 /// are the parser's AST types, reused here on purpose. These are stable,
@@ -64,6 +66,15 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
     },
     Limit {
+        count: u64,
+        input: Box<LogicalPlan>,
+    },
+    /// Order by a column and keep only the first `count` rows — the fusion of a
+    /// `Sort` directly under a `Limit`. Optimizer-only; the binder never emits
+    /// this node.
+    TopK {
+        column: String,
+        descending: bool,
         count: u64,
         input: Box<LogicalPlan>,
     },
@@ -121,6 +132,16 @@ impl LogicalPlan {
             }
             LogicalPlan::Limit { count, input } => {
                 writeln!(f, "{pad}Limit {count}")?;
+                input.fmt_indented(f, depth + 1)
+            }
+            LogicalPlan::TopK {
+                column,
+                descending,
+                count,
+                input,
+            } => {
+                let dir = if *descending { " DESC" } else { "" };
+                writeln!(f, "{pad}TopK [{column}{dir}] {count}")?;
                 input.fmt_indented(f, depth + 1)
             }
         }
@@ -288,6 +309,17 @@ mod tests {
     fn serializes_to_json() {
         let json = serde_json::to_string(&scan()).unwrap();
         assert_eq!(json, r#"{"Scan":{"table":"users"}}"#);
+    }
+
+    #[test]
+    fn renders_top_k_with_direction_and_count() {
+        let plan = LogicalPlan::TopK {
+            column: "age".into(),
+            descending: true,
+            count: 5,
+            input: Box::new(scan()),
+        };
+        assert_eq!(plan.to_string(), "TopK [age DESC] 5\n  Scan users");
     }
 
     #[test]

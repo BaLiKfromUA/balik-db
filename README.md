@@ -224,8 +224,8 @@ stderr with a non-zero exit code. See
 [docs/logical-planning.md](docs/logical-planning.md) for the operator set and
 validation rules.
 
-Add `--optimize` to apply simple logical rewrites before printing. Column
-pushdown records on each `Scan` the columns the query actually needs, so a
+Add `--optimize` to apply simple logical rewrites before printing. For example, 
+"column pushdown" optimization records on each `Scan` the columns the query actually needs, so a
 column store can read only those:
 
 ```bash
@@ -312,6 +312,7 @@ src/
       binder.rs        // binding + catalog validation
     optimizer/         // LogicalPlan -> LogicalPlan rewrites
       mod.rs           // public optimize() entry point
+      top_k.rs         // fuse adjacent Sort + Limit into a TopK
       column_pushdown.rs // record needed columns on each Scan
 tests/
   cli-integration.rs   // end-to-end tests driving the `balik-cli` binary
