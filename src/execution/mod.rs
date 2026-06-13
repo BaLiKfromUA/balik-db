@@ -7,6 +7,8 @@
 
 mod optimizer;
 mod planner;
+#[cfg(test)]
+mod test_support;
 
 pub use optimizer::optimize;
 pub use planner::{LogicalPlan, plan};

@@ -9,6 +9,8 @@
 //! any columns referenced only by `Filter` or `Sort`, de-duplicated. Plans
 //! without a `Scan` (`CreateTable`, `Insert`) pass through unchanged.
 
+use std::collections::HashSet;
+
 use super::super::planner::collect_expr_columns;
 use super::LogicalPlan;
 
@@ -26,36 +28,41 @@ pub(super) fn apply(plan: LogicalPlan) -> LogicalPlan {
 fn needed_columns(plan: &LogicalPlan) -> Option<Vec<String>> {
     let mut projected = Vec::new();
     let mut extra = Vec::new();
-    if !collect(plan, &mut projected, &mut extra) {
+    if !collect_required_columns(plan, &mut projected, &mut extra) {
         return None;
     }
-    let mut needed = Vec::new();
-    for column in projected.into_iter().chain(extra) {
-        if !needed.contains(&column) {
-            needed.push(column);
-        }
-    }
+    // Projected columns first, then filter/sort-only columns, each kept once.
+    let mut seen = HashSet::new();
+    let needed = projected
+        .into_iter()
+        .chain(extra)
+        .filter(|column| seen.insert(column.clone()))
+        .collect();
     Some(needed)
 }
 
 /// Gather projected columns into `projected` and filter/sort columns into
 /// `extra`, returning whether a `Scan` was found at the leaf.
-fn collect(plan: &LogicalPlan, projected: &mut Vec<String>, extra: &mut Vec<String>) -> bool {
+fn collect_required_columns(
+    plan: &LogicalPlan,
+    projected: &mut Vec<String>,
+    extra: &mut Vec<String>,
+) -> bool {
     match plan {
         LogicalPlan::Scan { .. } => true,
         LogicalPlan::Projection { columns, input } => {
             projected.extend(columns.iter().cloned());
-            collect(input, projected, extra)
+            collect_required_columns(input, projected, extra)
         }
         LogicalPlan::Filter { predicate, input } => {
             collect_expr_columns(predicate, extra);
-            collect(input, projected, extra)
+            collect_required_columns(input, projected, extra)
         }
         LogicalPlan::Sort { column, input, .. } | LogicalPlan::TopK { column, input, .. } => {
             extra.push(column.clone());
-            collect(input, projected, extra)
+            collect_required_columns(input, projected, extra)
         }
-        LogicalPlan::Limit { input, .. } => collect(input, projected, extra),
+        LogicalPlan::Limit { input, .. } => collect_required_columns(input, projected, extra),
         LogicalPlan::CreateTable { .. } | LogicalPlan::Insert { .. } => false,
     }
 }
@@ -102,50 +109,19 @@ fn set_scan_columns(plan: LogicalPlan, columns: Vec<String>) -> LogicalPlan {
             count,
             input: Box::new(set_scan_columns(*input, columns)),
         },
-        other => other,
+        // No scan to stamp; these are standalone roots. Listed explicitly so a
+        // new operator above a `Scan` is a compile error here, not a silently
+        // dropped recursion that leaves the scan un-pruned.
+        dml @ (LogicalPlan::CreateTable { .. } | LogicalPlan::Insert { .. }) => dml,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::metadata;
-    use crate::catalog::schema::{Column, ColumnType, Schema};
+    use crate::execution::test_support::seeded_store;
     use crate::parser;
-    use crate::storage::Storage;
     use crate::storage::column_store::ColumnStore;
-    use tempfile::TempDir;
-
-    /// A column store with a `users(id INT NOT NULL, name TEXT, age INT)` table.
-    fn seeded_store() -> (TempDir, ColumnStore) {
-        let tmp = TempDir::new().unwrap();
-        let db = tmp.path().join("db");
-        metadata::initialize(&db).unwrap();
-        let mut store = ColumnStore::open(&db).unwrap();
-        let schema = Schema {
-            columns: vec![
-                Column {
-                    name: "id".into(),
-                    ty: ColumnType::Int,
-                    nullable: false,
-                },
-                Column {
-                    name: "name".into(),
-                    ty: ColumnType::Text,
-                    nullable: true,
-                },
-                Column {
-                    name: "age".into(),
-                    ty: ColumnType::Int,
-                    nullable: true,
-                },
-            ],
-        };
-        store
-            .create_table("users", schema, Default::default())
-            .unwrap();
-        (tmp, store)
-    }
 
     fn optimized(query: &str, store: &ColumnStore) -> LogicalPlan {
         let stmt = parser::parse(query).unwrap();

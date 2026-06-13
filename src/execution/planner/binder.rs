@@ -189,42 +189,9 @@ fn literal_type_name(lit: &Literal) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::metadata;
+    use crate::execution::test_support::seeded_store;
     use crate::parser;
-    use crate::storage::Storage;
     use crate::storage::column_store::ColumnStore;
-    use tempfile::TempDir;
-
-    /// A column store with a `users(id INT NOT NULL, name TEXT, age INT)` table.
-    fn seeded_store() -> (TempDir, ColumnStore) {
-        let tmp = TempDir::new().unwrap();
-        let db = tmp.path().join("db");
-        metadata::initialize(&db).unwrap();
-        let mut store = ColumnStore::open(&db).unwrap();
-        let schema = Schema {
-            columns: vec![
-                Column {
-                    name: "id".into(),
-                    ty: ColumnType::Int,
-                    nullable: false,
-                },
-                Column {
-                    name: "name".into(),
-                    ty: ColumnType::Text,
-                    nullable: true,
-                },
-                Column {
-                    name: "age".into(),
-                    ty: ColumnType::Int,
-                    nullable: true,
-                },
-            ],
-        };
-        store
-            .create_table("users", schema, Default::default())
-            .unwrap();
-        (tmp, store)
-    }
 
     fn plan_of(query: &str, store: &ColumnStore) -> Result<LogicalPlan, Error> {
         let stmt = parser::parse(query).unwrap();
