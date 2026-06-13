@@ -2,10 +2,11 @@
 
 The planner turns a parsed AST into a **logical plan**: a tree of logical
 operators describing *what* a query does, independent of how it is executed. It
-sits between the parser (text → AST) and a future execution stage (plan → rows):
+sits between the parser (text → AST) and execution (plan → rows, see
+[execution.md](execution.md)):
 
 ```
-SQL text  ──parser──▶  AST  ──planner──▶  LogicalPlan  ──(later)──▶  rows
+SQL text  ──parser──▶  AST  ──planner──▶  LogicalPlan  ──execute──▶  rows
 ```
 
 Planning **does not execute** anything and reads no row data. It reads the
@@ -14,14 +15,15 @@ columns exist, and to expand `SELECT *`.
 
 ## Where it lives
 
-The planner is part of the `execution` module — the query-engine layer above the
-`Storage` trait — so that execution can join it there later:
+The planner is the `logical` layer of the `execution` module — the query-engine
+layer above the `Storage` trait — alongside the optimizer that rewrites the plan
+and the physical layer that executes it:
 
-- `src/execution/planner/plan.rs` — the `LogicalPlan` structures, their tree
+- `src/execution/logical/plan.rs` — the `LogicalPlan` structures, their tree
   `Display`, and `serde::Serialize` for JSON output.
-- `src/execution/planner/binder.rs` — binding and validation: AST + catalog →
+- `src/execution/logical/binder.rs` — binding and validation: AST + catalog →
   `LogicalPlan`. The only place that reads the catalog.
-- `src/execution/planner/mod.rs` — public entry point
+- `src/execution/logical/mod.rs` — public entry point
   `plan(stmt, storage) -> Result<LogicalPlan, Error>`, re-exported as
   `execution::plan`.
 

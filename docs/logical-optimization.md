@@ -2,10 +2,10 @@
 
 The optimizer rewrites a logical plan into an **equivalent** one that is cheaper
 to execute — same rows out, less work to get them. It sits between planning and
-a future execution stage:
+execution (see [execution.md](execution.md)):
 
 ```
-SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──optimizer──▶ LogicalPlan ──(later)──▶ rows
+SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──optimizer──▶ LogicalPlan ──execute──▶ rows
 ```
 
 Optimization is a pure `LogicalPlan → LogicalPlan` transformation. It reads no
@@ -15,14 +15,16 @@ Building a plan never optimizes it; the rewrite runs only when asked for (the
 
 ## Where it lives
 
-The optimizer is part of the `execution` module, beside the planner:
+The optimizer sits inside the `execution` module's `logical` layer, beside the
+binder:
 
-- `src/execution/optimizer/mod.rs` — public entry point
+- `src/execution/logical/optimizer/mod.rs` — public entry point
   `optimize(plan) -> LogicalPlan`, re-exported as `execution::optimize`. It runs
   the rules in a fixed order: top-K first, then column pushdown — so pushdown
   sees the fused `TopK` and still collects its ordering column.
-- `src/execution/optimizer/top_k.rs` — the top-K fusion rule.
-- `src/execution/optimizer/column_pushdown.rs` — the column-pushdown rule.
+- `src/execution/logical/optimizer/top_k.rs` — the top-K fusion rule.
+- `src/execution/logical/optimizer/column_pushdown.rs` — the column-pushdown
+  rule.
 
 ## Rules
 
