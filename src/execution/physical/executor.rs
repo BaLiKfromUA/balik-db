@@ -128,8 +128,8 @@ pub(super) fn execute_stream<'a>(
 
 /// The column names a relational plan produces, in order, derived from the plan
 /// shape alone so an empty result still has a header. A `Projection` fixes the
-/// names; the row-shaping operators above it pass their input's names through;
-/// a scan carries its resolved projection.
+/// names; the row-shaping operators (filter, sort, limit, top-K) defer to their
+/// input; a scan carries its resolved projection.
 fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
     match plan {
         PhysicalPlan::ProjectionExec { columns, .. } => Ok(columns.clone()),
@@ -255,9 +255,10 @@ fn project_batch(batch: &ColumnBatch, columns: &[String]) -> Result<ColumnBatch,
 /// Drain `source`, concatenate its batches, and sort all rows by `column`.
 /// Returns a single ordered batch, or `None` if the input produced no batch.
 ///
-/// The sort column must be present in the input — that is, among the selected
-/// columns, since the projection sits below the sort. Ordering is stable, so
-/// rows with equal keys keep their input order.
+/// The sort runs beneath the projection, so `column` need not be one of the
+/// query's output columns — it only has to be present in this operator's input,
+/// which column pushdown guarantees by stamping the ORDER BY column onto the
+/// scan. Ordering is stable, so rows with equal keys keep their input order.
 fn sort_batches(
     source: BatchStream<'_>,
     column: &str,
@@ -282,7 +283,7 @@ fn sort_batches(
 
     let key = names.iter().position(|n| n == column).ok_or_else(|| {
         Error::other(format!(
-            "ORDER BY column '{column}' is not available; it must be one of the selected columns"
+            "ORDER BY column '{column}' is not present in the sort input"
         ))
     })?;
 
@@ -339,8 +340,9 @@ impl Eq for HeapItem {}
 /// SQL leaves the order of tied rows unspecified, so a query may legitimately
 /// see a different tie order under the fused top-K than under a plain sort.
 ///
-/// The key column must be present in the input (a selected column), as the
-/// projection sits below this operator. Returns `None` if the input was empty.
+/// The key column need not be one of the query's output columns: this runs
+/// beneath the projection, so it only has to be present in the input, which
+/// column pushdown guarantees. Returns `None` if the input was empty.
 fn top_k(
     source: BatchStream<'_>,
     column: &str,
@@ -355,11 +357,15 @@ fn top_k(
     for batch in source {
         let batch = batch?;
         if names.is_none() {
-            key = batch.names.iter().position(|n| n == column).ok_or_else(|| {
-                Error::other(format!(
-                    "ORDER BY column '{column}' is not available; it must be one of the selected columns"
-                ))
-            })?;
+            key = batch
+                .names
+                .iter()
+                .position(|n| n == column)
+                .ok_or_else(|| {
+                    Error::other(format!(
+                        "ORDER BY column '{column}' is not present in the sort input"
+                    ))
+                })?;
             names = Some(batch.names.clone());
         }
         for r in 0..batch.num_rows() {
@@ -919,7 +925,7 @@ mod tests {
 
     #[test]
     fn sort_exec_errors_when_column_not_in_input() {
-        // `label` was not selected, so the sort cannot see it.
+        // The scan does not produce `label`, so the sort cannot see it.
         let (_tmp, store) = store_with_labels(&[(1, Some("a"))]);
         let scan = scan_t(Some(vec!["id".into()]), vec![]);
         let plan = sort("label", false, scan);

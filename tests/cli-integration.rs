@@ -906,6 +906,29 @@ fn query_unknown_table_fails() {
         .stderr(predicate::str::contains("no such table"));
 }
 
+#[test]
+fn query_order_by_column_not_in_select_list() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
+    // Names sort Alice(2) < Bob(3) < Charlie(1), independently of id.
+    run_query(&db, "INSERT INTO users VALUES (1, 'Charlie', 20)").success();
+    run_query(&db, "INSERT INTO users VALUES (2, 'Alice', 30)").success();
+    run_query(&db, "INSERT INTO users VALUES (3, 'Bob', 25)").success();
+
+    // ORDER BY name though only id is selected: rows come back in name order,
+    // and the output carries just the id column.
+    run_query(&db, "SELECT id FROM users ORDER BY name")
+        .success()
+        .stdout("id\n--\n2 \n3 \n1 \n");
+    run_query(&db, "SELECT id FROM users ORDER BY name DESC")
+        .success()
+        .stdout("id\n--\n1 \n3 \n2 \n");
+    // The same, fused into a TopK by ORDER BY + LIMIT.
+    run_query(&db, "SELECT id FROM users ORDER BY name LIMIT 2")
+        .success()
+        .stdout("id\n--\n2 \n3 \n");
+}
+
 fn explain(db: &std::path::Path, sql: &str, optimize: bool) -> assert_cmd::assert::Assert {
     let mut cmd = balik_cli();
     cmd.args(["explain", "--db", db.to_str().unwrap(), "--sql", sql]);

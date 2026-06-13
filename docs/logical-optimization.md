@@ -42,9 +42,9 @@ SELECT id FROM users ORDER BY name LIMIT 10
 ```
         before                          after
 
-Limit 10                         TopK [name] 10
-  Sort [name]                      Projection [id]
-    Projection [id]                  Scan users
+Projection [id]                  Projection [id]
+  Limit 10                         TopK [name] 10
+    Sort [name]                      Scan users
       Scan users
 ```
 

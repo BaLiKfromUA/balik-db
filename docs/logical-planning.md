@@ -45,7 +45,7 @@ mismatches surface as `InvalidQuery`; an ill-formed CREATE TABLE surfaces as
 | `Limit`       | cap the number of rows                             |
 
 For a SELECT, the relational operators nest innermost → outermost as
-`Scan → Filter → Projection → Sort → Limit`, so the printed tree reads
+`Scan → Filter → Sort → Limit → Projection`, so the printed tree reads
 outermost-first:
 
 ```
@@ -53,12 +53,16 @@ SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10
 ```
 
 ```
-Limit 10
-  Sort [name]
-    Projection [id, name]
+Projection [id, name]
+  Limit 10
+    Sort [name]
       Filter [age > 18]
         Scan users
 ```
+
+The projection sits *above* the sort and limit so that `ORDER BY` may reference a
+column the SELECT list does not — the sort runs while every column is still
+present, and the projection narrows to the output columns last.
 
 `SELECT *` expands to the table's columns under the `Projection`. `Filter`
 stores the WHERE expression verbatim; it is not evaluated here.
@@ -66,7 +70,7 @@ stores the WHERE expression verbatim; it is not evaluated here.
 ## Reusing AST leaf types
 
 What makes a plan different from an AST is the **shape of the tree** — a SELECT
-becomes a nested `Scan → Filter → Projection → Sort → Limit`, not a copy of the
+becomes a nested `Scan → Filter → Sort → Limit → Projection`, not a copy of the
 `Select` struct. The leaf payloads, however, are reused from the parser's AST:
 `ColumnDef` (in `CreateTable`), `Literal` (in `Insert`), and the `Expr` carried
 by `Filter`. This is deliberate. They are stable, semantic value types with no

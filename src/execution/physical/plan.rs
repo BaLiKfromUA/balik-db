@@ -6,9 +6,9 @@
 //! `Display` renders the conventional indented operator tree (outermost first):
 //!
 //! ```text
-//! LimitExec 10
-//!   SortExec [name]
-//!     ProjectionExec [id, name]
+//! ProjectionExec [id, name]
+//!   LimitExec 10
+//!     SortExec [name]
 //!       FilterExec [age > 18]
 //!         TableScanExec users
 //! ```
@@ -242,13 +242,13 @@ mod tests {
 
     #[test]
     fn renders_select_tree_outermost_first() {
-        let plan = PhysicalPlan::LimitExec {
-            count: 10,
-            input: Box::new(PhysicalPlan::SortExec {
-                column: "name".into(),
-                descending: false,
-                input: Box::new(PhysicalPlan::ProjectionExec {
-                    columns: vec!["id".into(), "name".into()],
+        let plan = PhysicalPlan::ProjectionExec {
+            columns: vec!["id".into(), "name".into()],
+            input: Box::new(PhysicalPlan::LimitExec {
+                count: 10,
+                input: Box::new(PhysicalPlan::SortExec {
+                    column: "name".into(),
+                    descending: false,
                     input: Box::new(PhysicalPlan::FilterExec {
                         predicate: Expr::Compare {
                             left: Box::new(Expr::Column("age".into())),
@@ -262,7 +262,7 @@ mod tests {
         };
         assert_eq!(
             plan.to_string(),
-            "LimitExec 10\n  SortExec [name]\n    ProjectionExec [id, name]\n      FilterExec [age > 18]\n        TableScanExec users"
+            "ProjectionExec [id, name]\n  LimitExec 10\n    SortExec [name]\n      FilterExec [age > 18]\n        TableScanExec users"
         );
     }
 

@@ -5,8 +5,8 @@
 //! `Display` renders the conventional indented operator tree (outermost first):
 //!
 //! ```text
-//! Limit 10
-//!   Projection [id, name]
+//! Projection [id, name]
+//!   Limit 10
 //!     Filter [age > 18]
 //!       Scan users
 //! ```
@@ -31,7 +31,7 @@ use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalO
 /// parallel set of planner types would add boilerplate and conversions without
 /// buying anything. The structural work that distinguishes a plan from an AST
 /// happens in the *shape* of the tree (a SELECT becomes a nested
-/// `Scan → Filter → Projection → Sort → Limit`, not a copy of `Select`), not in
+/// `Scan → Filter → Sort → Limit → Projection`, not a copy of `Select`), not in
 /// the leaves. If the planner later needs to attach resolved/typed information
 /// to expressions, that is the point to introduce dedicated plan-side types.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -239,10 +239,10 @@ mod tests {
 
     #[test]
     fn renders_select_tree_outermost_first() {
-        let plan = LogicalPlan::Limit {
-            count: 10,
-            input: Box::new(LogicalPlan::Projection {
-                columns: vec!["id".into(), "name".into()],
+        let plan = LogicalPlan::Projection {
+            columns: vec!["id".into(), "name".into()],
+            input: Box::new(LogicalPlan::Limit {
+                count: 10,
                 input: Box::new(LogicalPlan::Filter {
                     predicate: Expr::Compare {
                         left: Box::new(Expr::Column("age".into())),
@@ -255,7 +255,7 @@ mod tests {
         };
         assert_eq!(
             plan.to_string(),
-            "Limit 10\n  Projection [id, name]\n    Filter [age > 18]\n      Scan users"
+            "Projection [id, name]\n  Limit 10\n    Filter [age > 18]\n      Scan users"
         );
     }
 

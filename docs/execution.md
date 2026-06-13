@@ -95,15 +95,16 @@ A statement produces a `QueryResult`:
 - `Affected(message)` for `CREATE TABLE` / `INSERT`.
 
 The output column names are derived from the plan shape (a projection fixes them;
-row-shaping operators above it pass them through), so an empty result still has a
-correct header.
+the row-shaping operators below it defer to their input), so an empty result still
+has a correct header.
 
 ## Semantics and current limitations
 
-- **ORDER BY must reference a selected column.** The plan nests the sort *above*
-  the projection, so `SortExec` only sees the projected columns. `SELECT id FROM
-  t ORDER BY name` therefore errors — sort by a column you also select. See the
-  follow-up issue to lift this.
+- **ORDER BY may reference any column**, not only the selected ones. The plan
+  nests the projection *above* the sort, so the sort runs while every column is
+  still present and the projection narrows to the output columns afterwards;
+  column pushdown stamps the ordering column onto the scan. `SELECT id FROM t
+  ORDER BY name` sorts by `name` and returns only `id`.
 - **ASC / DESC**, single sort column, are supported. NULLs sort **first**
   ascending (last descending).
 - **NULL comparisons are never true.** Evaluation is the minimal two-valued

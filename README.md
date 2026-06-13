@@ -232,14 +232,14 @@ each `Scan` the columns the query actually needs, and an adjacent `ORDER BY` +
 ./balik-cli explain --db ./demo-db --optimize --sql "SELECT id FROM users WHERE age > 18 ORDER BY id LIMIT 5"
 
 Logical Plan:
-TopK [id] 5
-  Projection [id]
+Projection [id]
+  TopK [id] 5
     Filter [age > 18]
       Scan users [id, age]
 
 Physical Plan:
-TopKExec [id] 5
-  ProjectionExec [id]
+ProjectionExec [id]
+  TopKExec [id] 5
     FilterExec [age > 18]
       TableScanExec users [id, age] prune=[age > 18]
 ```

@@ -108,8 +108,8 @@ mod tests {
         );
         assert_eq!(
             physical,
-            "TopKExec [name] 10\n  \
-               ProjectionExec [id, name]\n    \
+            "ProjectionExec [id, name]\n  \
+               TopKExec [name] 10\n    \
                  FilterExec [age > 18]\n      \
                    TableScanExec users [id, name, age] prune=[age > 18]"
         );
@@ -125,9 +125,9 @@ mod tests {
         );
         assert_eq!(
             physical,
-            "LimitExec 10\n  \
-               SortExec [name]\n    \
-                 ProjectionExec [id, name]\n      \
+            "ProjectionExec [id, name]\n  \
+               LimitExec 10\n    \
+                 SortExec [name]\n      \
                    FilterExec [age > 18]\n        \
                      TableScanExec users prune=[age > 18]"
         );
