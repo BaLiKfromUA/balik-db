@@ -14,8 +14,8 @@
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::catalog::tables::TableOptions;
 use crate::error::Error;
-use crate::parser::ast::{ColumnDef, DataType};
-use crate::storage::Storage;
+use crate::parser::ast::{ColumnDef, DataType, Literal};
+use crate::storage::{Record, Storage, Value};
 
 use super::BatchStream;
 use super::plan::PhysicalPlan;
@@ -28,7 +28,7 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::CreateTableExec { table, columns } => {
             exec_create_table(table, columns, store)
         }
-        PhysicalPlan::InsertExec { .. } => exec_insert(plan, store),
+        PhysicalPlan::InsertExec { table, values } => exec_insert(table, values, store),
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -114,8 +114,31 @@ fn column_type(ty: DataType) -> ColumnType {
     }
 }
 
-fn exec_insert(_plan: &PhysicalPlan, _store: &mut dyn Storage) -> Result<QueryResult, Error> {
-    Err(not_implemented("InsertExec"))
+/// Run an INSERT: open the table, turn the parsed literals into a storage
+/// record, and append it. The binder has already checked arity and types, and
+/// storage persists the row so it survives a restart.
+fn exec_insert(
+    table: &str,
+    values: &[Literal],
+    store: &mut dyn Storage,
+) -> Result<QueryResult, Error> {
+    let handle = store.open_table(table)?;
+    let record = Record {
+        values: values.iter().map(literal_to_value).collect(),
+    };
+    let rid = store.insert(&handle, record)?;
+    Ok(QueryResult::Affected(format!(
+        "Inserted into '{table}' as rid {}",
+        rid.0
+    )))
+}
+
+fn literal_to_value(lit: &Literal) -> Value {
+    match lit {
+        Literal::Int(n) => Value::Int(*n),
+        Literal::Text(s) => Value::Text(s.clone()),
+        Literal::Null => Value::Null,
+    }
 }
 
 fn not_implemented(op: &str) -> Error {
@@ -222,6 +245,59 @@ mod tests {
                 nullable: false,
             }],
         };
+        assert!(execute(&plan, &mut store).is_err());
+    }
+
+    fn insert(table: &str, values: Vec<Literal>) -> PhysicalPlan {
+        PhysicalPlan::InsertExec {
+            table: table.into(),
+            values,
+        }
+    }
+
+    #[test]
+    fn insert_exec_appends_row_with_int_text_and_null() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+
+        let row = insert(
+            "users",
+            vec![
+                Literal::Int(1),
+                Literal::Text("Alice".into()),
+                Literal::Int(20),
+            ],
+        );
+        assert!(matches!(
+            execute(&row, &mut store).unwrap(),
+            QueryResult::Affected(_)
+        ));
+        // NULL into the nullable name/age columns.
+        let nulls = insert("users", vec![Literal::Int(2), Literal::Null, Literal::Null]);
+        execute(&nulls, &mut store).unwrap();
+
+        let handle = store.open_table("users").unwrap();
+        let mut rows: Vec<_> = store
+            .scan(&handle)
+            .unwrap()
+            .map(|r| r.unwrap().1.values)
+            .collect();
+        rows.sort_by_key(|v| match v[0] {
+            Value::Int(n) => n,
+            _ => 0,
+        });
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::Int(1), Value::Text("Alice".into()), Value::Int(20)],
+                vec![Value::Int(2), Value::Null, Value::Null],
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = insert("ghosts", vec![Literal::Int(1)]);
         assert!(execute(&plan, &mut store).is_err());
     }
 }
