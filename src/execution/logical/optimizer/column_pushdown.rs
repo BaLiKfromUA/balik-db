@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use super::super::planner::collect_expr_columns;
+use super::super::collect_expr_columns;
 use super::LogicalPlan;
 
 /// Stamp the scan beneath `plan` with the columns the query needs.
