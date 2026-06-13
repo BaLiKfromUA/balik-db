@@ -44,6 +44,11 @@ pub enum LogicalPlan {
     },
     Scan {
         table: String,
+        /// Columns the scan must produce. `None` means all of the table's
+        /// columns (the shape the binder emits); `Some` is the pruned set a
+        /// column-pushdown rewrite leaves behind.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        columns: Option<Vec<String>>,
     },
     Filter {
         predicate: Expr,
@@ -93,7 +98,10 @@ impl LogicalPlan {
                     .join(", ");
                 write!(f, "{pad}Insert {table} [{vals}]")
             }
-            LogicalPlan::Scan { table } => write!(f, "{pad}Scan {table}"),
+            LogicalPlan::Scan { table, columns } => match columns {
+                Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
+                None => write!(f, "{pad}Scan {table}"),
+            },
             LogicalPlan::Filter { predicate, input } => {
                 writeln!(f, "{pad}Filter [{}]", render_expr(predicate))?;
                 input.fmt_indented(f, depth + 1)
@@ -182,6 +190,21 @@ fn render_logical_op(op: LogicalOp) -> &'static str {
     }
 }
 
+/// Append every column referenced by `expr` to `out`, left-to-right and with
+/// duplicates, so callers can see exactly which columns a predicate touches.
+/// Shared by the binder (to validate references) and the optimizer (to decide
+/// which columns a scan must produce).
+pub(crate) fn collect_expr_columns(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Column(name) => out.push(name.clone()),
+        Expr::Literal(_) => {}
+        Expr::Compare { left, right, .. } | Expr::Logical { left, right, .. } => {
+            collect_expr_columns(left, out);
+            collect_expr_columns(right, out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +212,7 @@ mod tests {
     fn scan() -> LogicalPlan {
         LogicalPlan::Scan {
             table: "users".into(),
+            columns: None,
         }
     }
 
@@ -264,5 +288,18 @@ mod tests {
     fn serializes_to_json() {
         let json = serde_json::to_string(&scan()).unwrap();
         assert_eq!(json, r#"{"Scan":{"table":"users"}}"#);
+    }
+
+    #[test]
+    fn scan_with_columns_renders_and_serializes() {
+        let plan = LogicalPlan::Scan {
+            table: "users".into(),
+            columns: Some(vec!["id".into(), "name".into()]),
+        };
+        assert_eq!(plan.to_string(), "Scan users [id, name]");
+        assert_eq!(
+            serde_json::to_string(&plan).unwrap(),
+            r#"{"Scan":{"table":"users","columns":["id","name"]}}"#
+        );
     }
 }

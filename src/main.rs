@@ -29,7 +29,8 @@ fn main() -> ExitCode {
             path,
             query,
             format,
-        } => cli::commands::explain_logical::run(&path, &query, format),
+            optimize,
+        } => cli::commands::explain_logical::run(&path, &query, format, optimize),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
         cli::Command::TableCreate {

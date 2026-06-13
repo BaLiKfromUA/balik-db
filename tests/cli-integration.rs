@@ -861,6 +861,38 @@ fn explain_logical_prints_select_tree() {
 }
 
 #[test]
+fn explain_logical_optimize_pushes_columns_onto_scan() {
+    let (_tmp, db) = init_db_with_users();
+    // Without --optimize the scan reads every column (no column list).
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT id, name FROM users WHERE age > 18",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Scan users\n"));
+
+    // With --optimize the scan lists exactly the columns the query needs:
+    // the projected ones plus the column used only in the filter.
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT id, name FROM users WHERE age > 18",
+            "--optimize",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Scan users [id, name, age]"));
+}
+
+#[test]
 fn explain_logical_json_format_is_parseable() {
     let (_tmp, db) = init_db_with_users();
     let output = balik_cli()

@@ -9,6 +9,7 @@ mod binder;
 mod plan;
 
 pub use plan::LogicalPlan;
+pub(crate) use plan::collect_expr_columns;
 
 use crate::error::Error;
 use crate::parser::ast::Statement;

@@ -47,6 +47,9 @@ pub enum Command {
         /// Output format for the plan.
         #[arg(long, value_enum, default_value = "tree")]
         format: OutputFormat,
+        /// Apply simple logical optimizations before printing the plan.
+        #[arg(long)]
+        optimize: bool,
     },
 
     Doctor {

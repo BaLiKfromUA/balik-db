@@ -12,10 +12,10 @@ use std::collections::HashSet;
 
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::error::Error;
-use crate::parser::ast::{self, DataType, Expr, Literal, Projection, Statement};
+use crate::parser::ast::{self, DataType, Literal, Projection, Statement};
 use crate::storage::Storage;
 
-use super::plan::LogicalPlan;
+use super::plan::{LogicalPlan, collect_expr_columns};
 
 /// Bind `stmt` against `storage`'s catalog, producing a validated plan.
 pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
@@ -115,7 +115,7 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
     // Validate columns referenced by WHERE and ORDER BY against the table.
     if let Some(filter) = &sel.filter {
         let mut referenced = Vec::new();
-        collect_columns(filter, &mut referenced);
+        collect_expr_columns(filter, &mut referenced);
         for name in &referenced {
             ensure_column_exists(&known, name, &sel.from, "WHERE")?;
         }
@@ -128,6 +128,7 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
     // Sort → Limit.
     let mut plan = LogicalPlan::Scan {
         table: sel.from.clone(),
+        columns: None,
     };
     if let Some(filter) = &sel.filter {
         plan = LogicalPlan::Filter {
@@ -167,18 +168,6 @@ fn ensure_column_exists(
         Err(Error::invalid_query(format!(
             "{clause} references unknown column '{name}' in table '{table}'"
         )))
-    }
-}
-
-/// Collect every column reference in a WHERE expression, in left-to-right order.
-fn collect_columns(expr: &Expr, out: &mut Vec<String>) {
-    match expr {
-        Expr::Column(name) => out.push(name.clone()),
-        Expr::Literal(_) => {}
-        Expr::Compare { left, right, .. } | Expr::Logical { left, right, .. } => {
-            collect_columns(left, out);
-            collect_columns(right, out);
-        }
     }
 }
 
