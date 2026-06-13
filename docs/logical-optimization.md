@@ -11,7 +11,7 @@ SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──opti
 Optimization is a pure `LogicalPlan → LogicalPlan` transformation. It reads no
 row data and no catalog — every rule is derivable from the plan tree itself.
 Building a plan never optimizes it; the rewrite runs only when asked for (the
-`explain-logical --optimize` flag).
+`explain --optimize` flag), while `query` always optimizes before executing.
 
 ## Where it lives
 
@@ -82,9 +82,9 @@ through unchanged.
 ## CLI
 
 ```
-balik-cli explain-logical --db ./balik_db \
-  --query "SELECT id, name FROM users WHERE age > 18" --optimize
+balik-cli explain --db ./balik_db --optimize \
+  --sql "SELECT id, name FROM users WHERE age > 18"
 ```
 
-Without `--optimize` the plan prints as the binder built it; with it, the rules
-run first. `--format tree` (default) and `--format json` both honor the flag.
+Without `--optimize` the plans print as the binder built them; with it, the
+rules run first. `explain` prints both the logical and physical plans.

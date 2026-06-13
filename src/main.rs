@@ -25,12 +25,6 @@ fn main() -> ExitCode {
 
     let result: Result<(), Box<dyn std::error::Error>> = match args.command {
         cli::Command::Parse { query } => cli::commands::parse::run(&query).map_err(Into::into),
-        cli::Command::ExplainLogical {
-            path,
-            query,
-            format,
-            optimize,
-        } => cli::commands::explain_logical::run(&path, &query, format, optimize),
         cli::Command::Query { path, sql } => cli::commands::query::run(&path, &sql),
         cli::Command::Explain {
             path,

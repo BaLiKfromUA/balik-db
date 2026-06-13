@@ -88,9 +88,9 @@ does not.
 ## CLI
 
 ```
-balik-cli explain-logical --db ./balik_db --query "SELECT id FROM users WHERE age > 18"
+balik-cli explain --db ./balik_db --sql "SELECT id FROM users WHERE age > 18"
 ```
 
-`--format tree` (default) prints the operator tree; `--format json` prints the
-same plan as JSON. Parse or planning errors are written to stderr and the
-process exits non-zero.
+`explain` prints the logical operator tree followed by the physical plan it
+lowers to. Parse or planning errors are written to stderr and the process exits
+non-zero.

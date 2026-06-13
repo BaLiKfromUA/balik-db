@@ -1,18 +1,9 @@
 pub mod commands;
 pub mod values;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::path::PathBuf;
-
-/// How `explain-logical` renders a plan.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum OutputFormat {
-    /// Indented operator tree (the default).
-    Tree,
-    /// Pretty-printed JSON.
-    Json,
-}
 
 #[derive(Parser, Debug)]
 #[command(name = "balik-cli", version, about, long_about = None)]
@@ -32,24 +23,6 @@ pub enum Command {
         /// The SQL query to parse, as a single string.
         #[arg(long)]
         query: String,
-    },
-
-    /// Parse a SQL query, build its logical plan, and print it. Reads the
-    /// catalog to validate table and column references but does not execute the
-    /// query; exits non-zero with a message on stderr on a parse or planning
-    /// error.
-    ExplainLogical {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// The SQL query to plan, as a single string.
-        #[arg(long)]
-        query: String,
-        /// Output format for the plan.
-        #[arg(long, value_enum, default_value = "tree")]
-        format: OutputFormat,
-        /// Apply simple logical optimizations before printing the plan.
-        #[arg(long)]
-        optimize: bool,
     },
 
     /// Execute a SQL statement end to end and print its result. Runs the full

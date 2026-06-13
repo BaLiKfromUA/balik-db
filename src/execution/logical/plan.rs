@@ -11,7 +11,7 @@
 //!       Scan users
 //! ```
 //!
-//! The same structure serializes to JSON via `serde` for `--format json`.
+//! The same structure also serializes to JSON via `serde`.
 
 use std::fmt;
 

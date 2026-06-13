@@ -7,8 +7,8 @@
 //!
 //! Several leaf types (`ColumnDef`, `DataType`, `Literal`, `Expr`, and the
 //! operator enums) also derive `Serialize`. They are reused by the logical
-//! planner, whose `--format json` output serializes them directly; the derive
-//! is purely additive and keeps no dependency on storage or the catalog.
+//! plan, which serializes to JSON directly; the derive is purely additive and
+//! keeps no dependency on storage or the catalog.
 
 use serde::Serialize;
 

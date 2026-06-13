@@ -841,168 +841,6 @@ fn init_db_with_users() -> (TempDir, std::path::PathBuf) {
     (tmp, db)
 }
 
-#[test]
-fn explain_logical_prints_select_tree() {
-    let (_tmp, db) = init_db_with_users();
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT id, name FROM users WHERE age > 18 LIMIT 10",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Limit 10"))
-        .stdout(predicate::str::contains("Projection [id, name]"))
-        .stdout(predicate::str::contains("Filter [age > 18]"))
-        .stdout(predicate::str::contains("Scan users"));
-}
-
-#[test]
-fn explain_logical_optimize_pushes_columns_onto_scan() {
-    let (_tmp, db) = init_db_with_users();
-    // Without --optimize the scan reads every column (no column list).
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT id, name FROM users WHERE age > 18",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Scan users\n"));
-
-    // With --optimize the scan lists exactly the columns the query needs:
-    // the projected ones plus the column used only in the filter.
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT id, name FROM users WHERE age > 18",
-            "--optimize",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Scan users [id, name, age]"));
-}
-
-#[test]
-fn explain_logical_optimize_fuses_sort_and_limit_into_topk() {
-    let (_tmp, db) = init_db_with_users();
-    // Without --optimize the ORDER BY and LIMIT are separate operators.
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT id FROM users ORDER BY name LIMIT 10",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Limit 10"))
-        .stdout(predicate::str::contains("Sort [name]"));
-
-    // With --optimize they collapse into a single TopK node.
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT id FROM users ORDER BY name LIMIT 10",
-            "--optimize",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("TopK [name] 10"))
-        .stdout(predicate::str::contains("Limit").not())
-        .stdout(predicate::str::contains("Sort").not());
-}
-
-#[test]
-fn explain_logical_json_format_is_parseable() {
-    let (_tmp, db) = init_db_with_users();
-    let output = balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT * FROM users",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: serde_json::Value = serde_json::from_slice(&output).expect("output is valid JSON");
-    // `SELECT *` expands to every column under a Projection over a Scan.
-    assert!(
-        json["Projection"]["columns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c == "age")
-    );
-}
-
-#[test]
-fn explain_logical_unknown_column_fails() {
-    let (_tmp, db) = init_db_with_users();
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT nope FROM users",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unknown column 'nope'"));
-}
-
-#[test]
-fn explain_logical_unknown_table_fails() {
-    let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELECT * FROM ghosts",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such table"));
-}
-
-#[test]
-fn explain_logical_invalid_query_fails() {
-    let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "explain-logical",
-            "--db",
-            db.to_str().unwrap(),
-            "--query",
-            "SELEC id FROM users",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("error:"));
-}
-
 fn run_query(db: &std::path::Path, sql: &str) -> assert_cmd::assert::Assert {
     balik_cli()
         .args(["query", "--db", db.to_str().unwrap(), "--sql", sql])
@@ -1068,42 +906,72 @@ fn query_unknown_table_fails() {
         .stderr(predicate::str::contains("no such table"));
 }
 
-#[test]
-fn explain_shows_logical_and_physical_plans() {
-    let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
-    balik_cli()
-        .args([
-            "explain",
-            "--db",
-            db.to_str().unwrap(),
-            "--optimize",
-            "--sql",
-            "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Logical Plan:"))
-        .stdout(predicate::str::contains("Physical Plan:"))
-        .stdout(predicate::str::contains("TopKExec"))
-        .stdout(predicate::str::contains("TableScanExec users"))
-        .stdout(predicate::str::contains("prune=[age > 18]"));
+fn explain(db: &std::path::Path, sql: &str, optimize: bool) -> assert_cmd::assert::Assert {
+    let mut cmd = balik_cli();
+    cmd.args(["explain", "--db", db.to_str().unwrap(), "--sql", sql]);
+    if optimize {
+        cmd.arg("--optimize");
+    }
+    cmd.assert()
 }
 
 #[test]
-fn explain_without_optimize_shows_sort_and_limit() {
-    let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
-    balik_cli()
-        .args([
-            "explain",
-            "--db",
-            db.to_str().unwrap(),
-            "--sql",
-            "SELECT id FROM users ORDER BY id LIMIT 5",
-        ])
-        .assert()
+fn explain_optimized_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    // --optimize fuses ORDER BY + LIMIT into TopK and pushes the needed columns
+    // onto the scan; both plans reflect that.
+    explain(
+        &db,
+        "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10",
+        true,
+    )
+    .success()
+    // Logical plan.
+    .stdout(predicate::str::contains("Logical Plan:"))
+    .stdout(predicate::str::contains("TopK [name] 10"))
+    .stdout(predicate::str::contains("Projection [id, name]"))
+    .stdout(predicate::str::contains("Filter [age > 18]"))
+    .stdout(predicate::str::contains("Scan users [id, name, age]"))
+    // Physical plan.
+    .stdout(predicate::str::contains("Physical Plan:"))
+    .stdout(predicate::str::contains("TopKExec [name] 10"))
+    .stdout(predicate::str::contains(
+        "TableScanExec users [id, name, age] prune=[age > 18]",
+    ));
+}
+
+#[test]
+fn explain_without_optimize_keeps_sort_and_limit_separate() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "SELECT id FROM users ORDER BY id LIMIT 5", false)
         .success()
-        .stdout(predicate::str::contains("SortExec"))
-        .stdout(predicate::str::contains("LimitExec"));
+        .stdout(predicate::str::contains("Sort [id]"))
+        .stdout(predicate::str::contains("Limit 5"))
+        .stdout(predicate::str::contains("SortExec [id]"))
+        .stdout(predicate::str::contains("LimitExec 5"))
+        .stdout(predicate::str::contains("TopK").not());
+}
+
+#[test]
+fn explain_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    explain(&db, "SELECT * FROM ghosts", false)
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn explain_unknown_column_fails() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "SELECT nope FROM users", false)
+        .failure()
+        .stderr(predicate::str::contains("unknown column 'nope'"));
+}
+
+#[test]
+fn explain_invalid_query_fails() {
+    let (_tmp, db) = init_db();
+    explain(&db, "SELEC id FROM users", false)
+        .failure()
+        .stderr(predicate::str::contains("error:"));
 }

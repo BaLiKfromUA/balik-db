@@ -1,6 +1,5 @@
 pub mod doctor;
 pub mod explain;
-pub mod explain_logical;
 pub mod init;
 pub mod parse;
 pub mod query;

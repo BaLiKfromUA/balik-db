@@ -203,40 +203,57 @@ It prints the AST to stdout on success; on a malformed query it writes an error
 SQL subset, AST shape, and what the parser deliberately does *not* validate are
 documented in [docs/sql-grammar.md](docs/sql-grammar.md).
 
-## Logical planning
+## Planning and execution
 
-The `explain-logical` command takes the AST one step further: it builds a
-**logical plan** (a tree of logical operators) and validates it against the
-catalog — table and column references must exist, INSERT arity and types must
-match. It does not execute the query.
-
-```bash
-./balik-cli explain-logical --query "SELECT id, name FROM users WHERE age > 18 LIMIT 10"
-
-Limit 10
-  Projection [id, name]
-    Filter [age > 18]
-      Scan users
-```
-
-Use `--format json` for machine-readable output. Parse or planning errors go to
-stderr with a non-zero exit code. See
-[docs/logical-planning.md](docs/logical-planning.md) for the operator set and
-validation rules.
-
-Add `--optimize` to apply simple logical rewrites before printing. For example, 
-"column pushdown" optimization records on each `Scan` the columns the query actually needs, so a
-column store can read only those:
+The `explain` command builds the query's plans and prints them without running
+anything: the **logical plan** (a tree of logical operators, validated against
+the catalog — table and column references must exist, INSERT arity and types
+must match) and the **physical plan** it lowers to.
 
 ```bash
-./balik-cli explain-logical --query "SELECT id, name FROM users WHERE age > 18" --optimize
+./balik-cli explain --db ./demo-db --sql "SELECT id FROM users WHERE age > 18"
 
-Projection [id, name]
+Logical Plan:
+Projection [id]
   Filter [age > 18]
-    Scan users [id, name, age]
+    Scan users
+
+Physical Plan:
+ProjectionExec [id]
+  FilterExec [age > 18]
+    TableScanExec users prune=[age > 18]
 ```
 
-See [docs/logical-optimization.md](docs/logical-optimization.md).
+Add `--optimize` to apply logical rewrites first — "column pushdown" records on
+each `Scan` the columns the query actually needs, and an adjacent `ORDER BY` +
+`LIMIT` fuse into a single `TopK`:
+
+```bash
+./balik-cli explain --db ./demo-db --optimize --sql "SELECT id FROM users WHERE age > 18 ORDER BY id LIMIT 5"
+
+Logical Plan:
+TopK [id] 5
+  Projection [id]
+    Filter [age > 18]
+      Scan users [id, age]
+
+Physical Plan:
+TopKExec [id] 5
+  ProjectionExec [id]
+    FilterExec [age > 18]
+      TableScanExec users [id, age] prune=[age > 18]
+```
+
+The `query` command runs the whole pipeline and prints the result:
+
+```bash
+./balik-cli query --db ./demo-db --sql "SELECT id, name FROM users WHERE age >= 18 ORDER BY name LIMIT 10"
+```
+
+Parse or planning errors go to stderr with a non-zero exit code. See
+[docs/logical-planning.md](docs/logical-planning.md) for the operator set,
+[docs/logical-optimization.md](docs/logical-optimization.md) for the rewrites,
+and [docs/execution.md](docs/execution.md) for how the physical operators run.
 
 ## Logging
 
@@ -282,7 +299,8 @@ src/
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
-      explain_logical.rs // parse + build a logical plan and print it (tree / JSON)
+      explain.rs       // print a query's logical and physical plans
+      query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
       table_create.rs  // create a table from a schema DSL
