@@ -8,6 +8,8 @@
 //! that an INSERT supplies the right number of well-typed values, and that a
 //! CREATE TABLE is internally consistent.
 
+use std::collections::HashSet;
+
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::error::Error;
 use crate::parser::ast::{self, DataType, Expr, Literal, Projection, Statement};
@@ -94,6 +96,9 @@ fn check_value(value: &Literal, col: &Column, table: &str) -> Result<(), Error> 
 fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
     let desc = storage.describe_table(&sel.from)?;
     let schema = &desc.schema;
+    // Index the table's columns once so each existence check is O(1) rather
+    // than rescanning the column list per reference.
+    let known: HashSet<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
 
     // Resolve the projection: `*` expands to the table's columns; an explicit
     // list must reference only columns that exist.
@@ -101,7 +106,7 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
         Projection::All => schema.columns.iter().map(|c| c.name.clone()).collect(),
         Projection::Columns(cols) => {
             for name in cols {
-                ensure_column_exists(schema, name, &sel.from, "SELECT")?;
+                ensure_column_exists(&known, name, &sel.from, "SELECT")?;
             }
             cols.clone()
         }
@@ -112,11 +117,11 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
         let mut referenced = Vec::new();
         collect_columns(filter, &mut referenced);
         for name in &referenced {
-            ensure_column_exists(schema, name, &sel.from, "WHERE")?;
+            ensure_column_exists(&known, name, &sel.from, "WHERE")?;
         }
     }
     if let Some(order_by) = &sel.order_by {
-        ensure_column_exists(schema, &order_by.column, &sel.from, "ORDER BY")?;
+        ensure_column_exists(&known, &order_by.column, &sel.from, "ORDER BY")?;
     }
 
     // Stack operators innermost → outermost: Scan → Filter → Projection →
@@ -151,12 +156,12 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
 }
 
 fn ensure_column_exists(
-    schema: &Schema,
+    known: &HashSet<&str>,
     name: &str,
     table: &str,
     clause: &str,
 ) -> Result<(), Error> {
-    if schema.columns.iter().any(|c| c.name == name) {
+    if known.contains(name) {
         Ok(())
     } else {
         Err(Error::invalid_query(format!(
