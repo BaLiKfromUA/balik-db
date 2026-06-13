@@ -11,6 +11,8 @@
 //! lands, its arm returns a plain "not yet implemented" error rather than
 //! panicking, so partial builds stay runnable.
 
+use std::cmp::Ordering;
+
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::catalog::tables::TableOptions;
 use crate::error::Error;
@@ -71,7 +73,19 @@ pub(super) fn execute_stream<'a>(
                 source.map(move |batch| project_batch(&batch?, columns)),
             ))
         }
-        PhysicalPlan::SortExec { .. } => Err(not_implemented("SortExec")),
+        PhysicalPlan::SortExec {
+            column,
+            descending,
+            input,
+        } => {
+            // Sorting is blocking: drain the whole input, order it, then emit a
+            // single batch. An empty input yields no batch.
+            let source = execute_stream(input, store)?;
+            match sort_batches(source, column, *descending)? {
+                Some(batch) => Ok(Box::new(std::iter::once(Ok(batch)))),
+                None => Ok(Box::new(std::iter::empty())),
+            }
+        }
         PhysicalPlan::LimitExec { .. } => Err(not_implemented("LimitExec")),
         PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => Err(
             Error::other("DDL/DML operator cannot appear inside a query pipeline"),
@@ -201,6 +215,71 @@ fn project_batch(batch: &ColumnBatch, columns: &[String]) -> Result<ColumnBatch,
         names: columns.to_vec(),
         columns: projected,
     })
+}
+
+/// Drain `source`, concatenate its batches, and sort all rows by `column`.
+/// Returns a single ordered batch, or `None` if the input produced no batch.
+///
+/// The sort column must be present in the input — that is, among the selected
+/// columns, since the projection sits below the sort. Ordering is stable, so
+/// rows with equal keys keep their input order.
+fn sort_batches(
+    source: BatchStream<'_>,
+    column: &str,
+    descending: bool,
+) -> Result<Option<ColumnBatch>, Error> {
+    let mut names: Option<Vec<String>> = None;
+    let mut columns: Vec<Vec<Value>> = Vec::new();
+    for batch in source {
+        let batch = batch?;
+        if names.is_none() {
+            names = Some(batch.names);
+            columns = batch.columns;
+        } else {
+            for (acc, col) in columns.iter_mut().zip(batch.columns) {
+                acc.extend(col);
+            }
+        }
+    }
+    let Some(names) = names else {
+        return Ok(None);
+    };
+
+    let key = names.iter().position(|n| n == column).ok_or_else(|| {
+        Error::other(format!(
+            "ORDER BY column '{column}' is not available; it must be one of the selected columns"
+        ))
+    })?;
+
+    let mut order: Vec<usize> = (0..columns[key].len()).collect();
+    order.sort_by(|&i, &j| {
+        let ord = order_values(&columns[key][i], &columns[key][j]);
+        if descending { ord.reverse() } else { ord }
+    });
+
+    let sorted = columns
+        .iter()
+        .map(|col| order.iter().map(|&i| col[i].clone()).collect())
+        .collect();
+    Ok(Some(ColumnBatch {
+        names,
+        columns: sorted,
+    }))
+}
+
+/// Total order over values for sorting. NULLs sort before all non-null values
+/// (so they come first ascending, last descending). The mixed-type arms are
+/// unreachable for a single typed column but keep the ordering total.
+fn order_values(a: &Value, b: &Value) -> Ordering {
+    match (a, b) {
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Null, _) => Ordering::Less,
+        (_, Value::Null) => Ordering::Greater,
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Int(_), Value::Text(_)) => Ordering::Less,
+        (Value::Text(_), Value::Int(_)) => Ordering::Greater,
+    }
 }
 
 fn not_implemented(op: &str) -> Error {
@@ -643,6 +722,57 @@ mod tests {
         let plan = project(vec!["ghost"], scan);
         let mut stream = execute_stream(&plan, &store).unwrap();
         assert!(stream.next().unwrap().is_err());
+    }
+
+    fn sort(column: &str, descending: bool, input: PhysicalPlan) -> PhysicalPlan {
+        PhysicalPlan::SortExec {
+            column: column.into(),
+            descending,
+            input: Box::new(input),
+        }
+    }
+
+    #[test]
+    fn sort_exec_orders_ascending_by_int() {
+        let (_tmp, store) = store_with_labels(&[(3, Some("c")), (1, Some("a")), (2, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&sort("id", false, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn sort_exec_orders_descending_by_int() {
+        let (_tmp, store) = store_with_labels(&[(3, Some("c")), (1, Some("a")), (2, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&sort("id", true, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn sort_exec_orders_by_text_column() {
+        // Labels order differently from ids: a(id2), b(id3), c(id1).
+        let (_tmp, store) = store_with_labels(&[(1, Some("c")), (2, Some("a")), (3, Some("b"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&sort("label", false, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn sort_exec_places_nulls_first_ascending() {
+        // NULL (id2) sorts before 'a' (id3) before 'b' (id1).
+        let (_tmp, store) = store_with_labels(&[(1, Some("b")), (2, None), (3, Some("a"))]);
+        let scan = scan_t(Some(vec!["id".into(), "label".into()]), vec![]);
+        let batches = run_scan(&sort("label", false, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn sort_exec_errors_when_column_not_in_input() {
+        // `label` was not selected, so the sort cannot see it.
+        let (_tmp, store) = store_with_labels(&[(1, Some("a"))]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let plan = sort("label", false, scan);
+        assert!(execute_stream(&plan, &store).is_err());
     }
 
     #[test]
