@@ -4,6 +4,13 @@
 //! types leak past this module. Every node derives `Debug` so the CLI can print
 //! a readable, indented tree with `{:#?}`. The shape is deliberately small and
 //! semantic (named fields, typed literals) rather than a bag of raw tokens.
+//!
+//! Several leaf types (`ColumnDef`, `DataType`, `Literal`, `Expr`, and the
+//! operator enums) also derive `Serialize`. They are reused by the logical
+//! planner, whose `--format json` output serializes them directly; the derive
+//! is purely additive and keeps no dependency on storage or the catalog.
+
+use serde::Serialize;
 
 /// A single parsed top-level statement.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +27,7 @@ pub struct CreateTable {
     pub columns: Vec<ColumnDef>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ColumnDef {
     pub name: String,
     pub ty: DataType,
@@ -32,7 +39,7 @@ pub struct ColumnDef {
 /// The column types the parser recognizes. Mirrors the engine's logical types
 /// without depending on the catalog: a later binder maps these onto the real
 /// `catalog::schema::ColumnType`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DataType {
     Int,
     Text,
@@ -46,7 +53,7 @@ pub struct Insert {
 }
 
 /// A literal value appearing in an INSERT row or a WHERE comparison.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Literal {
     Int(i64),
     Text(String),
@@ -86,7 +93,7 @@ pub struct OrderBy {
 /// comparison whose operand is itself a logical combination). Checking that an
 /// expression is well-typed and boolean-valued is a binder/validation concern,
 /// not the parser's — see `docs/sql-grammar.md`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Expr {
     /// A column reference, e.g. `age`.
     Column(String),
@@ -106,7 +113,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CompareOp {
     Eq,
     NotEq,
@@ -116,7 +123,7 @@ pub enum CompareOp {
     GtEq,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum LogicalOp {
     And,
     Or,

@@ -17,6 +17,10 @@ pub enum Error {
     /// A record or value did not match its column's type, nullability, or the
     /// table's arity.
     InvalidValue(String),
+    /// A query is syntactically valid but logically ill-formed: it references a
+    /// column that does not exist, supplies the wrong number of values, or
+    /// otherwise fails binding against the catalog.
+    InvalidQuery(String),
     /// A stored CRC did not match a file's contents.
     ChecksumMismatch(String),
     /// An on-disk file is structurally invalid: bad magic, truncation, an
@@ -45,6 +49,10 @@ impl Error {
         Error::InvalidValue(msg.into())
     }
 
+    pub fn invalid_query(msg: impl Into<String>) -> Self {
+        Error::InvalidQuery(msg.into())
+    }
+
     pub fn checksum_mismatch(msg: impl Into<String>) -> Self {
         Error::ChecksumMismatch(msg.into())
     }
@@ -71,6 +79,7 @@ impl Error {
         match self {
             Error::InvalidSchema(m) => Error::InvalidSchema(format!("{ctx}: {m}")),
             Error::InvalidValue(m) => Error::InvalidValue(format!("{ctx}: {m}")),
+            Error::InvalidQuery(m) => Error::InvalidQuery(format!("{ctx}: {m}")),
             Error::ChecksumMismatch(m) => Error::ChecksumMismatch(format!("{ctx}: {m}")),
             Error::Corrupt(m) => Error::Corrupt(format!("{ctx}: {m}")),
             Error::Other(m) => Error::Other(format!("{ctx}: {m}")),
@@ -91,6 +100,7 @@ impl fmt::Display for Error {
             Error::TableExists(name) => write!(f, "table '{name}' already exists"),
             Error::InvalidSchema(msg) => write!(f, "invalid schema: {msg}"),
             Error::InvalidValue(msg) => write!(f, "{msg}"),
+            Error::InvalidQuery(msg) => write!(f, "{msg}"),
             Error::ChecksumMismatch(msg) => write!(f, "{msg}"),
             Error::Corrupt(msg) => write!(f, "{msg}"),
             Error::Io { context, source } => write!(f, "{context}: {source}"),

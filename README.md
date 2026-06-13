@@ -203,6 +203,27 @@ It prints the AST to stdout on success; on a malformed query it writes an error
 SQL subset, AST shape, and what the parser deliberately does *not* validate are
 documented in [docs/sql-grammar.md](docs/sql-grammar.md).
 
+## Logical planning
+
+The `explain-logical` command takes the AST one step further: it builds a
+**logical plan** (a tree of logical operators) and validates it against the
+catalog — table and column references must exist, INSERT arity and types must
+match. It does not execute the query.
+
+```bash
+./balik-cli explain-logical --query "SELECT id, name FROM users WHERE age > 18 LIMIT 10"
+
+Limit 10
+  Projection [id, name]
+    Filter [age > 18]
+      Scan users
+```
+
+Use `--format json` for machine-readable output. Parse or planning errors go to
+stderr with a non-zero exit code. See
+[docs/logical-planning.md](docs/logical-planning.md) for the operator set and
+validation rules.
+
 ## Logging
 
 The CLI uses [`tracing`](https://docs.rs/tracing) for diagnostics, wired through [`clap-verbosity-flag`](https://docs.rs/clap-verbosity-flag). Logs are silent by default and go to stdout when enabled — raise the level with `-v` (repeatable):
@@ -247,6 +268,7 @@ src/
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
+      explain_logical.rs // parse + build a logical plan and print it (tree / JSON)
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
       table_create.rs  // create a table from a schema DSL
@@ -268,8 +290,12 @@ src/
     ast.rs             // internal AST (no third-party parser types leak out)
     lower.rs           // sqlparser tree -> internal AST + structural validation
     error.rs           // ParseError (independent of the storage Error)
-  execution/           // stub — query planning and execution (later stage)
-    mod.rs
+  execution/           // query-engine layer above the Storage trait
+    mod.rs             // re-exports the planner; execution lands here later
+    planner/           // AST -> LogicalPlan
+      mod.rs           // public plan() entry point
+      plan.rs          // LogicalPlan structures + tree Display + JSON
+      binder.rs        // binding + catalog validation
 tests/
   cli-integration.rs   // end-to-end tests driving the `balik-cli` binary
 ```

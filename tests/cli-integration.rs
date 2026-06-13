@@ -822,3 +822,117 @@ fn row_delete_unknown_rid_fails() {
         .failure()
         .stderr(predicate::str::contains("no such record"));
 }
+
+/// Initialize a db with a `users(id INT, name TEXT, age INT)` table.
+fn init_db_with_users() -> (TempDir, std::path::PathBuf) {
+    let (tmp, db) = init_db();
+    balik_cli()
+        .args([
+            "table-create",
+            "--db",
+            db.to_str().unwrap(),
+            "--table",
+            "users",
+            "--columns",
+            "id:INT,name:TEXT?,age:INT?",
+        ])
+        .assert()
+        .success();
+    (tmp, db)
+}
+
+#[test]
+fn explain_logical_prints_select_tree() {
+    let (_tmp, db) = init_db_with_users();
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT id, name FROM users WHERE age > 18 LIMIT 10",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Limit 10"))
+        .stdout(predicate::str::contains("Projection [id, name]"))
+        .stdout(predicate::str::contains("Filter [age > 18]"))
+        .stdout(predicate::str::contains("Scan users"));
+}
+
+#[test]
+fn explain_logical_json_format_is_parseable() {
+    let (_tmp, db) = init_db_with_users();
+    let output = balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT * FROM users",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).expect("output is valid JSON");
+    // `SELECT *` expands to every column under a Projection over a Scan.
+    assert!(
+        json["Projection"]["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "age")
+    );
+}
+
+#[test]
+fn explain_logical_unknown_column_fails() {
+    let (_tmp, db) = init_db_with_users();
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT nope FROM users",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown column 'nope'"));
+}
+
+#[test]
+fn explain_logical_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELECT * FROM ghosts",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn explain_logical_invalid_query_fails() {
+    let (_tmp, db) = init_db();
+    balik_cli()
+        .args([
+            "explain-logical",
+            "--db",
+            db.to_str().unwrap(),
+            "--query",
+            "SELEC id FROM users",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}

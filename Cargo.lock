@@ -106,6 +106,7 @@ dependencies = [
  "clap-verbosity-flag",
  "predicates",
  "serde",
+ "serde_json",
  "sqlparser",
  "tempfile",
  "toml",

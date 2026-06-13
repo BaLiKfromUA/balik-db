@@ -215,6 +215,18 @@ mod tests {
     }
 
     #[test]
+    fn select_limit_rejects_negative() {
+        // `-5` parses as a unary minus over `5`, so it reaches lowering as a
+        // negative integer and is rejected there rather than at tokenization.
+        let err = parse("SELECT id FROM users LIMIT -5").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("LIMIT requires a non-negative integer"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn select_all_comparison_operators() {
         for (sql, op) in [
             ("=", CompareOp::Eq),
