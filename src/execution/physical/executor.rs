@@ -287,10 +287,7 @@ fn sort_batches(
     })?;
 
     let mut order: Vec<usize> = (0..columns[key].len()).collect();
-    order.sort_by(|&i, &j| {
-        let ord = order_values(&columns[key][i], &columns[key][j]);
-        if descending { ord.reverse() } else { ord }
-    });
+    order.sort_by(|&i, &j| ordered(&columns[key][i], &columns[key][j], descending));
 
     let sorted = columns
         .iter()
@@ -314,8 +311,7 @@ struct HeapItem {
 
 impl Ord for HeapItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        let ord = order_values(&self.key, &other.key);
-        if self.descending { ord.reverse() } else { ord }
+        ordered(&self.key, &other.key, self.descending)
     }
 }
 
@@ -337,6 +333,11 @@ impl Eq for HeapItem {}
 /// using a bounded max-heap: the heap holds at most `count` items, and whenever
 /// a new row beats the current worst-kept one (the heap's max), it replaces it.
 /// This is O(rows · log count) time and O(count) memory — never a full sort.
+///
+/// Unlike `SortExec`, this is *not* stable: rows with equal sort keys may come
+/// out in any order, since the heap does not preserve input order among ties.
+/// SQL leaves the order of tied rows unspecified, so a query may legitimately
+/// see a different tie order under the fused top-K than under a plain sort.
 ///
 /// The key column must be present in the input (a selected column), as the
 /// projection sits below this operator. Returns `None` if the input was empty.
@@ -365,16 +366,25 @@ fn top_k(
             if k == 0 {
                 break;
             }
-            let item = HeapItem {
-                key: batch.columns[key][r].clone(),
-                descending,
-                row: batch.columns.iter().map(|c| c[r].clone()).collect(),
-            };
-            if heap.len() < k {
-                heap.push(item);
-            } else if item < *heap.peek().expect("heap is full, so non-empty") {
-                heap.pop();
-                heap.push(item);
+            // Decide admission from the key alone, so a row that loses to the
+            // current worst-kept candidate is never materialized. Only when the
+            // row will actually be kept do we clone its columns.
+            let candidate = &batch.columns[key][r];
+            let admit = heap.len() < k
+                || ordered(
+                    candidate,
+                    &heap.peek().expect("heap is full, so non-empty").key,
+                    descending,
+                ) == Ordering::Less;
+            if admit {
+                if heap.len() == k {
+                    heap.pop();
+                }
+                heap.push(HeapItem {
+                    key: candidate.clone(),
+                    descending,
+                    row: batch.columns.iter().map(|c| c[r].clone()).collect(),
+                });
             }
         }
     }
@@ -391,6 +401,14 @@ fn top_k(
         }
     }
     Ok(Some(ColumnBatch { names, columns }))
+}
+
+/// [`order_values`] with the sort direction folded in: ascending returns the
+/// natural order, descending reverses it. The shared comparison used by both the
+/// full sort and the top-K heap.
+fn ordered(a: &Value, b: &Value, descending: bool) -> Ordering {
+    let ord = order_values(a, b);
+    if descending { ord.reverse() } else { ord }
 }
 
 /// Total order over values for sorting. NULLs sort before all non-null values
