@@ -224,6 +224,20 @@ stderr with a non-zero exit code. See
 [docs/logical-planning.md](docs/logical-planning.md) for the operator set and
 validation rules.
 
+Add `--optimize` to apply simple logical rewrites before printing. For example, 
+"column pushdown" optimization records on each `Scan` the columns the query actually needs, so a
+column store can read only those:
+
+```bash
+./balik-cli explain-logical --query "SELECT id, name FROM users WHERE age > 18" --optimize
+
+Projection [id, name]
+  Filter [age > 18]
+    Scan users [id, name, age]
+```
+
+See [docs/logical-optimization.md](docs/logical-optimization.md).
+
 ## Logging
 
 The CLI uses [`tracing`](https://docs.rs/tracing) for diagnostics, wired through [`clap-verbosity-flag`](https://docs.rs/clap-verbosity-flag). Logs are silent by default and go to stdout when enabled — raise the level with `-v` (repeatable):
@@ -291,11 +305,15 @@ src/
     lower.rs           // sqlparser tree -> internal AST + structural validation
     error.rs           // ParseError (independent of the storage Error)
   execution/           // query-engine layer above the Storage trait
-    mod.rs             // re-exports the planner; execution lands here later
+    mod.rs             // re-exports planner + optimizer; execution lands here later
     planner/           // AST -> LogicalPlan
       mod.rs           // public plan() entry point
       plan.rs          // LogicalPlan structures + tree Display + JSON
       binder.rs        // binding + catalog validation
+    optimizer/         // LogicalPlan -> LogicalPlan rewrites
+      mod.rs           // public optimize() entry point
+      top_k.rs         // fuse adjacent Sort + Limit into a TopK
+      column_pushdown.rs // record needed columns on each Scan
 tests/
   cli-integration.rs   // end-to-end tests driving the `balik-cli` binary
 ```

@@ -21,7 +21,9 @@ use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalO
 
 /// A node in the logical plan. `CreateTable` and `Insert` are standalone roots;
 /// the relational operators (`Scan`, `Filter`, `Projection`, `Sort`, `Limit`)
-/// nest innermost → outermost, with `Scan` always at the leaf.
+/// nest innermost → outermost, with `Scan` always at the leaf. `TopK` is never
+/// produced by the binder — the optimizer introduces it by fusing an adjacent
+/// `Sort` and `Limit`.
 ///
 /// The leaf payloads — `ColumnDef`, `Literal`, and the `Expr` in a `Filter` —
 /// are the parser's AST types, reused here on purpose. These are stable,
@@ -44,6 +46,11 @@ pub enum LogicalPlan {
     },
     Scan {
         table: String,
+        /// Columns the scan must produce. `None` means all of the table's
+        /// columns (the shape the binder emits); `Some` is the pruned set a
+        /// column-pushdown rewrite leaves behind.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        columns: Option<Vec<String>>,
     },
     Filter {
         predicate: Expr,
@@ -59,6 +66,15 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
     },
     Limit {
+        count: u64,
+        input: Box<LogicalPlan>,
+    },
+    /// Order by a column and keep only the first `count` rows — the fusion of a
+    /// `Sort` directly under a `Limit`. Optimizer-only; the binder never emits
+    /// this node.
+    TopK {
+        column: String,
+        descending: bool,
         count: u64,
         input: Box<LogicalPlan>,
     },
@@ -93,7 +109,10 @@ impl LogicalPlan {
                     .join(", ");
                 write!(f, "{pad}Insert {table} [{vals}]")
             }
-            LogicalPlan::Scan { table } => write!(f, "{pad}Scan {table}"),
+            LogicalPlan::Scan { table, columns } => match columns {
+                Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
+                None => write!(f, "{pad}Scan {table}"),
+            },
             LogicalPlan::Filter { predicate, input } => {
                 writeln!(f, "{pad}Filter [{}]", render_expr(predicate))?;
                 input.fmt_indented(f, depth + 1)
@@ -113,6 +132,16 @@ impl LogicalPlan {
             }
             LogicalPlan::Limit { count, input } => {
                 writeln!(f, "{pad}Limit {count}")?;
+                input.fmt_indented(f, depth + 1)
+            }
+            LogicalPlan::TopK {
+                column,
+                descending,
+                count,
+                input,
+            } => {
+                let dir = if *descending { " DESC" } else { "" };
+                writeln!(f, "{pad}TopK [{column}{dir}] {count}")?;
                 input.fmt_indented(f, depth + 1)
             }
         }
@@ -182,6 +211,21 @@ fn render_logical_op(op: LogicalOp) -> &'static str {
     }
 }
 
+/// Append every column referenced by `expr` to `out`, left-to-right and with
+/// duplicates, so callers can see exactly which columns a predicate touches.
+/// Shared by the binder (to validate references) and the optimizer (to decide
+/// which columns a scan must produce).
+pub(crate) fn collect_expr_columns(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Column(name) => out.push(name.clone()),
+        Expr::Literal(_) => {}
+        Expr::Compare { left, right, .. } | Expr::Logical { left, right, .. } => {
+            collect_expr_columns(left, out);
+            collect_expr_columns(right, out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +233,7 @@ mod tests {
     fn scan() -> LogicalPlan {
         LogicalPlan::Scan {
             table: "users".into(),
+            columns: None,
         }
     }
 
@@ -264,5 +309,29 @@ mod tests {
     fn serializes_to_json() {
         let json = serde_json::to_string(&scan()).unwrap();
         assert_eq!(json, r#"{"Scan":{"table":"users"}}"#);
+    }
+
+    #[test]
+    fn renders_top_k_with_direction_and_count() {
+        let plan = LogicalPlan::TopK {
+            column: "age".into(),
+            descending: true,
+            count: 5,
+            input: Box::new(scan()),
+        };
+        assert_eq!(plan.to_string(), "TopK [age DESC] 5\n  Scan users");
+    }
+
+    #[test]
+    fn scan_with_columns_renders_and_serializes() {
+        let plan = LogicalPlan::Scan {
+            table: "users".into(),
+            columns: Some(vec!["id".into(), "name".into()]),
+        };
+        assert_eq!(plan.to_string(), "Scan users [id, name]");
+        assert_eq!(
+            serde_json::to_string(&plan).unwrap(),
+            r#"{"Scan":{"table":"users","columns":["id","name"]}}"#
+        );
     }
 }
