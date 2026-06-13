@@ -2,27 +2,29 @@
 
 The optimizer rewrites a logical plan into an **equivalent** one that is cheaper
 to execute — same rows out, less work to get them. It sits between planning and
-a future execution stage:
+execution (see [execution.md](execution.md)):
 
 ```
-SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──optimizer──▶ LogicalPlan ──(later)──▶ rows
+SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──optimizer──▶ LogicalPlan ──execute──▶ rows
 ```
 
 Optimization is a pure `LogicalPlan → LogicalPlan` transformation. It reads no
 row data and no catalog — every rule is derivable from the plan tree itself.
 Building a plan never optimizes it; the rewrite runs only when asked for (the
-`explain-logical --optimize` flag).
+`explain --optimize` flag), while `query` always optimizes before executing.
 
 ## Where it lives
 
-The optimizer is part of the `execution` module, beside the planner:
+The optimizer sits inside the `execution` module's `logical` layer, beside the
+binder:
 
-- `src/execution/optimizer/mod.rs` — public entry point
+- `src/execution/logical/optimizer/mod.rs` — public entry point
   `optimize(plan) -> LogicalPlan`, re-exported as `execution::optimize`. It runs
   the rules in a fixed order: top-K first, then column pushdown — so pushdown
   sees the fused `TopK` and still collects its ordering column.
-- `src/execution/optimizer/top_k.rs` — the top-K fusion rule.
-- `src/execution/optimizer/column_pushdown.rs` — the column-pushdown rule.
+- `src/execution/logical/optimizer/top_k.rs` — the top-K fusion rule.
+- `src/execution/logical/optimizer/column_pushdown.rs` — the column-pushdown
+  rule.
 
 ## Rules
 
@@ -40,9 +42,9 @@ SELECT id FROM users ORDER BY name LIMIT 10
 ```
         before                          after
 
-Limit 10                         TopK [name] 10
-  Sort [name]                      Projection [id]
-    Projection [id]                  Scan users
+Projection [id]                  Projection [id]
+  Limit 10                         TopK [name] 10
+    Sort [name]                      Scan users
       Scan users
 ```
 
@@ -80,9 +82,9 @@ through unchanged.
 ## CLI
 
 ```
-balik-cli explain-logical --db ./balik_db \
-  --query "SELECT id, name FROM users WHERE age > 18" --optimize
+balik-cli explain --db ./balik_db --optimize \
+  --sql "SELECT id, name FROM users WHERE age > 18"
 ```
 
-Without `--optimize` the plan prints as the binder built it; with it, the rules
-run first. `--format tree` (default) and `--format json` both honor the flag.
+Without `--optimize` the plans print as the binder built them; with it, the
+rules run first. `explain` prints both the logical and physical plans.

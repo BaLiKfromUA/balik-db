@@ -2,10 +2,11 @@
 
 The planner turns a parsed AST into a **logical plan**: a tree of logical
 operators describing *what* a query does, independent of how it is executed. It
-sits between the parser (text → AST) and a future execution stage (plan → rows):
+sits between the parser (text → AST) and execution (plan → rows, see
+[execution.md](execution.md)):
 
 ```
-SQL text  ──parser──▶  AST  ──planner──▶  LogicalPlan  ──(later)──▶  rows
+SQL text  ──parser──▶  AST  ──planner──▶  LogicalPlan  ──execute──▶  rows
 ```
 
 Planning **does not execute** anything and reads no row data. It reads the
@@ -14,14 +15,15 @@ columns exist, and to expand `SELECT *`.
 
 ## Where it lives
 
-The planner is part of the `execution` module — the query-engine layer above the
-`Storage` trait — so that execution can join it there later:
+The planner is the `logical` layer of the `execution` module — the query-engine
+layer above the `Storage` trait — alongside the optimizer that rewrites the plan
+and the physical layer that executes it:
 
-- `src/execution/planner/plan.rs` — the `LogicalPlan` structures, their tree
+- `src/execution/logical/plan.rs` — the `LogicalPlan` structures, their tree
   `Display`, and `serde::Serialize` for JSON output.
-- `src/execution/planner/binder.rs` — binding and validation: AST + catalog →
+- `src/execution/logical/binder.rs` — binding and validation: AST + catalog →
   `LogicalPlan`. The only place that reads the catalog.
-- `src/execution/planner/mod.rs` — public entry point
+- `src/execution/logical/mod.rs` — public entry point
   `plan(stmt, storage) -> Result<LogicalPlan, Error>`, re-exported as
   `execution::plan`.
 
@@ -43,7 +45,7 @@ mismatches surface as `InvalidQuery`; an ill-formed CREATE TABLE surfaces as
 | `Limit`       | cap the number of rows                             |
 
 For a SELECT, the relational operators nest innermost → outermost as
-`Scan → Filter → Projection → Sort → Limit`, so the printed tree reads
+`Scan → Filter → Sort → Limit → Projection`, so the printed tree reads
 outermost-first:
 
 ```
@@ -51,12 +53,16 @@ SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10
 ```
 
 ```
-Limit 10
-  Sort [name]
-    Projection [id, name]
+Projection [id, name]
+  Limit 10
+    Sort [name]
       Filter [age > 18]
         Scan users
 ```
+
+The projection sits *above* the sort and limit so that `ORDER BY` may reference a
+column the SELECT list does not — the sort runs while every column is still
+present, and the projection narrows to the output columns last.
 
 `SELECT *` expands to the table's columns under the `Projection`. `Filter`
 stores the WHERE expression verbatim; it is not evaluated here.
@@ -64,7 +70,7 @@ stores the WHERE expression verbatim; it is not evaluated here.
 ## Reusing AST leaf types
 
 What makes a plan different from an AST is the **shape of the tree** — a SELECT
-becomes a nested `Scan → Filter → Projection → Sort → Limit`, not a copy of the
+becomes a nested `Scan → Filter → Sort → Limit → Projection`, not a copy of the
 `Select` struct. The leaf payloads, however, are reused from the parser's AST:
 `ColumnDef` (in `CreateTable`), `Literal` (in `Insert`), and the `Expr` carried
 by `Filter`. This is deliberate. They are stable, semantic value types with no
@@ -86,9 +92,9 @@ does not.
 ## CLI
 
 ```
-balik-cli explain-logical --db ./balik_db --query "SELECT id FROM users WHERE age > 18"
+balik-cli explain --db ./balik_db --sql "SELECT id FROM users WHERE age > 18"
 ```
 
-`--format tree` (default) prints the operator tree; `--format json` prints the
-same plan as JSON. Parse or planning errors are written to stderr and the
-process exits non-zero.
+`explain` prints the logical operator tree followed by the physical plan it
+lowers to. Parse or planning errors are written to stderr and the process exits
+non-zero.

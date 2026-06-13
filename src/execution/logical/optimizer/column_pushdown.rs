@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use super::super::planner::collect_expr_columns;
+use super::super::collect_expr_columns;
 use super::LogicalPlan;
 
 /// Stamp the scan beneath `plan` with the columns the query needs.
@@ -138,7 +138,7 @@ mod tests {
         );
         assert_eq!(
             plan.to_string(),
-            "Sort [name]\n  Projection [id, name]\n    Filter [age > 18]\n      Scan users [id, name, age]"
+            "Projection [id, name]\n  Sort [name]\n    Filter [age > 18]\n      Scan users [id, name, age]"
         );
     }
 
@@ -158,7 +158,7 @@ mod tests {
         let plan = optimized("SELECT id FROM users WHERE id > 1 ORDER BY id", &store);
         assert_eq!(
             plan.to_string(),
-            "Sort [id]\n  Projection [id]\n    Filter [id > 1]\n      Scan users [id]"
+            "Projection [id]\n  Sort [id]\n    Filter [id > 1]\n      Scan users [id]"
         );
     }
 
@@ -171,7 +171,7 @@ mod tests {
         let plan = crate::execution::optimize(crate::execution::plan(&stmt, &store).unwrap());
         assert_eq!(
             plan.to_string(),
-            "TopK [name] 10\n  Projection [id]\n    Scan users [id, name]"
+            "Projection [id]\n  TopK [name] 10\n    Scan users [id, name]"
         );
     }
 

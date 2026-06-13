@@ -1,18 +1,9 @@
 pub mod commands;
 pub mod values;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::path::PathBuf;
-
-/// How `explain-logical` renders a plan.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum OutputFormat {
-    /// Indented operator tree (the default).
-    Tree,
-    /// Pretty-printed JSON.
-    Json,
-}
 
 #[derive(Parser, Debug)]
 #[command(name = "balik-cli", version, about, long_about = None)]
@@ -34,20 +25,28 @@ pub enum Command {
         query: String,
     },
 
-    /// Parse a SQL query, build its logical plan, and print it. Reads the
-    /// catalog to validate table and column references but does not execute the
-    /// query; exits non-zero with a message on stderr on a parse or planning
-    /// error.
-    ExplainLogical {
+    /// Execute a SQL statement end to end and print its result. Runs the full
+    /// pipeline (parse, plan, optimize, lower, execute) against storage; exits
+    /// non-zero with a message on stderr on any error.
+    Query {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
-        /// The SQL query to plan, as a single string.
+        /// The SQL statement to execute, as a single string.
         #[arg(long)]
-        query: String,
-        /// Output format for the plan.
-        #[arg(long, value_enum, default_value = "tree")]
-        format: OutputFormat,
-        /// Apply simple logical optimizations before printing the plan.
+        sql: String,
+    },
+
+    /// Print the logical and physical plans for a SQL query without running it.
+    /// Reads the catalog to validate references; exits non-zero on a parse or
+    /// planning error.
+    Explain {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// The SQL statement to plan, as a single string.
+        #[arg(long)]
+        sql: String,
+        /// Apply logical optimizations before planning, matching what `query`
+        /// executes.
         #[arg(long)]
         optimize: bool,
     },

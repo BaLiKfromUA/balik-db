@@ -83,7 +83,7 @@ mod tests {
         let plan = fused("SELECT id FROM users ORDER BY name LIMIT 10", &store);
         assert_eq!(
             plan.to_string(),
-            "TopK [name] 10\n  Projection [id]\n    Scan users"
+            "Projection [id]\n  TopK [name] 10\n    Scan users"
         );
     }
 
@@ -93,7 +93,7 @@ mod tests {
         let plan = fused("SELECT id FROM users ORDER BY age DESC LIMIT 5", &store);
         assert_eq!(
             plan.to_string(),
-            "TopK [age DESC] 5\n  Projection [id]\n    Scan users"
+            "Projection [id]\n  TopK [age DESC] 5\n    Scan users"
         );
     }
 
@@ -103,7 +103,7 @@ mod tests {
         let plan = fused("SELECT id FROM users ORDER BY name", &store);
         assert_eq!(
             plan.to_string(),
-            "Sort [name]\n  Projection [id]\n    Scan users"
+            "Projection [id]\n  Sort [name]\n    Scan users"
         );
     }
 
@@ -113,7 +113,7 @@ mod tests {
         let plan = fused("SELECT id FROM users LIMIT 5", &store);
         assert_eq!(
             plan.to_string(),
-            "Limit 5\n  Projection [id]\n    Scan users"
+            "Projection [id]\n  Limit 5\n    Scan users"
         );
     }
 }

@@ -124,8 +124,11 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
         ensure_column_exists(&known, &order_by.column, &sel.from, "ORDER BY")?;
     }
 
-    // Stack operators innermost → outermost: Scan → Filter → Projection →
-    // Sort → Limit.
+    // Stack operators innermost → outermost: Scan → Filter → Sort → Limit →
+    // Projection. The projection sits *above* the sort so that ORDER BY can
+    // reference a column the SELECT list does not — the sort runs while every
+    // column is still present, and the projection narrows to the output columns
+    // afterwards.
     let mut plan = LogicalPlan::Scan {
         table: sel.from.clone(),
         columns: None,
@@ -136,10 +139,6 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
             input: Box::new(plan),
         };
     }
-    plan = LogicalPlan::Projection {
-        columns: projection_columns,
-        input: Box::new(plan),
-    };
     if let Some(order_by) = &sel.order_by {
         plan = LogicalPlan::Sort {
             column: order_by.column.clone(),
@@ -153,6 +152,10 @@ fn bind_select(sel: &ast::Select, storage: &dyn Storage) -> Result<LogicalPlan, 
             input: Box::new(plan),
         };
     }
+    plan = LogicalPlan::Projection {
+        columns: projection_columns,
+        input: Box::new(plan),
+    };
     Ok(plan)
 }
 
@@ -280,7 +283,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             plan.to_string(),
-            "Limit 10\n  Sort [name]\n    Projection [id, name]\n      Filter [age > 18]\n        Scan users"
+            "Projection [id, name]\n  Limit 10\n    Sort [name]\n      Filter [age > 18]\n        Scan users"
         );
     }
 

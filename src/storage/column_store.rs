@@ -17,7 +17,8 @@ use crate::catalog::tables::{
 };
 use crate::error::Error;
 use crate::storage::{
-    Record, Rid, ScanIter, Storage, TableHandle, Value, column_file, delete_bitmap,
+    BatchIter, ColumnBatch, Record, Rid, ScanCompare, ScanIter, ScanPredicate, Storage,
+    TableHandle, Value, column_file, delete_bitmap,
 };
 
 const ROW_GROUPS_DIR: &str = "row_groups";
@@ -435,6 +436,191 @@ impl Storage for ColumnStore {
             errored: false,
         };
         Ok(Box::new(state))
+    }
+
+    fn scan_batches<'a>(
+        &'a self,
+        table: &TableHandle,
+        projection: Option<&[String]>,
+        prune: &[ScanPredicate],
+    ) -> Result<BatchIter<'a>, Error> {
+        // Resolve the projection to concrete column names in the requested
+        // order; `None` decodes every column in schema order.
+        let projected: Vec<String> = match projection {
+            None => table
+                .schema
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+            Some(names) => {
+                for name in names {
+                    if !table.schema.columns.iter().any(|c| &c.name == name) {
+                        return Err(Error::other(format!(
+                            "scan projection references unknown column '{name}' in table '{}'",
+                            table.name
+                        )));
+                    }
+                }
+                names.to_vec()
+            }
+        };
+
+        // Keep only prune predicates on INT columns that exist — others carry
+        // no zone-map stats, so they simply contribute no pruning.
+        let prune: Vec<ScanPredicate> = prune
+            .iter()
+            .filter(|p| {
+                table
+                    .schema
+                    .columns
+                    .iter()
+                    .any(|c| c.name == p.column && matches!(c.ty, ColumnType::Int))
+            })
+            .cloned()
+            .collect();
+
+        // Snapshot `next_rid` once so a concurrent insert can't widen the scan.
+        let total_rows = self.catalog.describe_table(&table.name)?.next_rid;
+        Ok(Box::new(BatchScanState {
+            table_dir: table.dir.clone(),
+            projected,
+            prune,
+            row_group_size: table.row_group_size,
+            total_rows,
+            current_group: 0,
+            errored: false,
+        }))
+    }
+}
+
+/// Streaming vectorized scan. For each row group it first consults the INT
+/// zone maps to decide whether the group can be skipped wholesale, then decodes
+/// only the projected columns and compacts out deleted rows into one batch.
+struct BatchScanState {
+    table_dir: PathBuf,
+    projected: Vec<String>,
+    prune: Vec<ScanPredicate>,
+    row_group_size: u32,
+    total_rows: u64,
+    current_group: u32,
+    errored: bool,
+}
+
+impl BatchScanState {
+    /// Return the next non-empty batch, or `None` once every group is consumed.
+    fn try_next(&mut self) -> Result<Option<ColumnBatch>, Error> {
+        let rgs = u64::from(self.row_group_size);
+        loop {
+            let first_rid_of_group = u64::from(self.current_group) * rgs;
+            if first_rid_of_group >= self.total_rows {
+                return Ok(None);
+            }
+            let rg_dir = row_group_dir(&self.table_dir, self.current_group);
+            self.current_group += 1;
+
+            if self.group_pruned(&rg_dir)? {
+                continue;
+            }
+            if let Some(batch) = self.load_group(&rg_dir, first_rid_of_group)? {
+                return Ok(Some(batch));
+            }
+        }
+    }
+
+    /// True when the group's INT zone maps prove no live row can satisfy every
+    /// (conjunctive) prune predicate, so the group can be skipped without
+    /// decoding any data.
+    fn group_pruned(&self, rg_dir: &Path) -> Result<bool, Error> {
+        for pred in &self.prune {
+            let header = column_file::read_header(&col_path(rg_dir, &pred.column))?;
+            match (header.int_min(), header.int_max()) {
+                // No live INT value in this group → a comparison matches nothing.
+                (Some(min), Some(max)) if group_can_match(pred.op, pred.value, min, max) => {}
+                _ => return Ok(true),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Decode the projected columns of one group and compact out deleted rows.
+    /// Returns `None` when the group has no live rows.
+    fn load_group(
+        &self,
+        rg_dir: &Path,
+        first_rid_of_group: u64,
+    ) -> Result<Option<ColumnBatch>, Error> {
+        let mut raw = Vec::with_capacity(self.projected.len());
+        for name in &self.projected {
+            let (_, values) = column_file::read_column(&col_path(rg_dir, name))?;
+            raw.push(values);
+        }
+        let stored_rows = raw.first().map_or(0, Vec::len);
+        if let Some(bad) = raw.iter().position(|c| c.len() != stored_rows) {
+            return Err(Error::corrupt(format!(
+                "row group at '{}': column '{}' has {} rows but '{}' has {}",
+                rg_dir.display(),
+                self.projected[bad],
+                raw[bad].len(),
+                self.projected[0],
+                stored_rows,
+            )));
+        }
+        // Never read past the snapshotted commit point, even if a column file
+        // physically holds more rows (e.g. an unrecovered torn write).
+        let remaining = (self.total_rows - first_rid_of_group) as usize;
+        let group_rows = stored_rows.min(remaining);
+
+        let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
+        let mut columns: Vec<Vec<Value>> = vec![Vec::new(); raw.len()];
+        for offset in 0..group_rows {
+            if delete_bitmap::is_deleted(&deletes, offset) {
+                continue;
+            }
+            for (c, col) in raw.iter().enumerate() {
+                columns[c].push(col[offset].clone());
+            }
+        }
+        if columns.first().is_some_and(Vec::is_empty) {
+            return Ok(None);
+        }
+        Ok(Some(ColumnBatch {
+            names: self.projected.clone(),
+            columns,
+        }))
+    }
+}
+
+impl Iterator for BatchScanState {
+    type Item = Result<ColumnBatch, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.errored {
+            return None;
+        }
+        match self.try_next() {
+            Ok(Some(batch)) => Some(Ok(batch)),
+            Ok(None) => None,
+            Err(e) => {
+                self.errored = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+/// Whether a row group whose live INT range is `[min, max]` could contain a row
+/// satisfying `col <op> value`. Conservative: `true` keeps the group, `false`
+/// proves it can be skipped.
+fn group_can_match(op: ScanCompare, value: i64, min: i64, max: i64) -> bool {
+    match op {
+        ScanCompare::Eq => min <= value && value <= max,
+        // Only impossible when every live value equals `value`.
+        ScanCompare::NotEq => !(min == value && max == value),
+        ScanCompare::Lt => min < value,
+        ScanCompare::LtEq => min <= value,
+        ScanCompare::Gt => max > value,
+        ScanCompare::GtEq => max >= value,
     }
 }
 
@@ -1240,6 +1426,96 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1.values[0], Value::Int(7));
         assert_eq!(rows[1].1.values[1], Value::Null);
+    }
+
+    fn collect_batches(
+        store: &ColumnStore,
+        h: &TableHandle,
+        projection: Option<&[String]>,
+        prune: &[ScanPredicate],
+    ) -> Vec<ColumnBatch> {
+        store
+            .scan_batches(h, projection, prune)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn scan_batches_yields_compacted_column_major_batch() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        for (id, name) in [(1, Some("alice")), (2, None), (3, Some("carol"))] {
+            let nm = name.map_or(Value::Null, |s| Value::Text(s.to_string()));
+            store.insert(&h, record(vec![Value::Int(id), nm])).unwrap();
+        }
+        store.delete(&h, Rid(1)).unwrap();
+
+        let batches = collect_batches(&store, &h, None, &[]);
+        assert_eq!(batches.len(), 1, "single default-sized row group");
+        let b = &batches[0];
+        assert_eq!(b.names, vec!["id", "name"]);
+        assert_eq!(b.num_rows(), 2, "deleted row compacted out");
+        assert_eq!(b.columns[0], vec![Value::Int(1), Value::Int(3)]);
+        assert_eq!(
+            b.columns[1],
+            vec![Value::Text("alice".into()), Value::Text("carol".into())]
+        );
+    }
+
+    #[test]
+    fn scan_batches_projection_decodes_only_requested_columns() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+        store
+            .insert(&h, record(vec![Value::Int(1), Value::Text("alice".into())]))
+            .unwrap();
+
+        let batches = collect_batches(&store, &h, Some(&["name".to_string()]), &[]);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].names, vec!["name"]);
+        assert_eq!(batches[0].columns.len(), 1);
+        assert_eq!(batches[0].columns[0], vec![Value::Text("alice".into())]);
+    }
+
+    #[test]
+    fn scan_batches_prunes_row_groups_via_int_min_max() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "t",
+                schema_users(),
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let h = store.open_table("t").unwrap();
+        // rgs=2: ids 0,1 in group 0; 2,3 in group 1; 4 in group 2.
+        for i in 0..5 {
+            store
+                .insert(&h, record(vec![Value::Int(i), Value::Null]))
+                .unwrap();
+        }
+
+        // `id > 3` can only match group 2 (max id 4); groups 0 and 1 are pruned.
+        let prune = vec![ScanPredicate {
+            column: "id".into(),
+            op: ScanCompare::Gt,
+            value: 3,
+        }];
+        let batches = collect_batches(&store, &h, Some(&["id".to_string()]), &prune);
+        let ids: Vec<Value> = batches.iter().flat_map(|b| b.columns[0].clone()).collect();
+        assert_eq!(ids, vec![Value::Int(4)]);
     }
 
     #[test]
