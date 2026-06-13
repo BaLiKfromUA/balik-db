@@ -1002,3 +1002,108 @@ fn explain_logical_invalid_query_fails() {
         .failure()
         .stderr(predicate::str::contains("error:"));
 }
+
+fn run_query(db: &std::path::Path, sql: &str) -> assert_cmd::assert::Assert {
+    balik_cli()
+        .args(["query", "--db", db.to_str().unwrap(), "--sql", sql])
+        .assert()
+}
+
+#[test]
+fn query_runs_create_insert_select_pipeline() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
+    run_query(&db, "INSERT INTO users VALUES (1, 'Alice', 20)").success();
+    run_query(&db, "INSERT INTO users VALUES (2, 'Bob', 15)").success();
+    run_query(&db, "INSERT INTO users VALUES (3, 'Carol', 30)").success();
+
+    // A fresh process per invocation, so this select also proves the inserts
+    // persisted across a reopen.
+    let assert = run_query(
+        &db,
+        "SELECT id, name FROM users WHERE age >= 18 ORDER BY name LIMIT 10",
+    )
+    .success()
+    .stdout(predicate::str::contains("Alice"))
+    .stdout(predicate::str::contains("Carol"))
+    .stdout(predicate::str::contains("Bob").not());
+
+    // WHERE dropped Bob (age 15); ORDER BY put Alice before Carol.
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.find("Alice") < stdout.find("Carol"),
+        "rows not in name order:\n{stdout}"
+    );
+}
+
+#[test]
+fn query_select_star_returns_all_columns() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE t (id INT, name TEXT, age INT)").success();
+    run_query(&db, "INSERT INTO t VALUES (7, 'Zed', 40)").success();
+    run_query(&db, "SELECT * FROM t")
+        .success()
+        .stdout(predicate::str::contains("id"))
+        .stdout(predicate::str::contains("name"))
+        .stdout(predicate::str::contains("age"))
+        .stdout(predicate::str::contains("Zed"))
+        .stdout(predicate::str::contains("40"));
+}
+
+#[test]
+fn query_limit_zero_returns_no_rows() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE t (id INT, name TEXT)").success();
+    run_query(&db, "INSERT INTO t VALUES (1, 'Alice')").success();
+    run_query(&db, "SELECT * FROM t LIMIT 0")
+        .success()
+        .stdout(predicate::str::contains("Alice").not());
+}
+
+#[test]
+fn query_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "SELECT * FROM ghosts")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn explain_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
+    balik_cli()
+        .args([
+            "explain",
+            "--db",
+            db.to_str().unwrap(),
+            "--optimize",
+            "--sql",
+            "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Logical Plan:"))
+        .stdout(predicate::str::contains("Physical Plan:"))
+        .stdout(predicate::str::contains("TopKExec"))
+        .stdout(predicate::str::contains("TableScanExec users"))
+        .stdout(predicate::str::contains("prune=[age > 18]"));
+}
+
+#[test]
+fn explain_without_optimize_shows_sort_and_limit() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
+    balik_cli()
+        .args([
+            "explain",
+            "--db",
+            db.to_str().unwrap(),
+            "--sql",
+            "SELECT id FROM users ORDER BY id LIMIT 5",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SortExec"))
+        .stdout(predicate::str::contains("LimitExec"));
+}

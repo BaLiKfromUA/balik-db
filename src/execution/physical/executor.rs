@@ -222,7 +222,8 @@ fn filter_batch(batch: &ColumnBatch, mask: &[bool]) -> ColumnBatch {
         .map(|col| {
             col.iter()
                 .zip(mask)
-                .filter_map(|(v, &keep)| keep.then(|| v.clone()))
+                .filter(|&(_, &keep)| keep)
+                .map(|(v, _)| v.clone())
                 .collect()
         })
         .collect();
@@ -416,10 +417,6 @@ fn truncate_batch(mut batch: ColumnBatch, n: usize) -> ColumnBatch {
         }
     }
     batch
-}
-
-fn not_implemented(op: &str) -> Error {
-    Error::other(format!("{op} is not yet implemented"))
 }
 
 #[cfg(test)]

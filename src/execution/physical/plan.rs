@@ -27,6 +27,9 @@ use crate::storage::{ScanCompare, ScanPredicate};
 /// The leaf payloads — `ColumnDef`, `Literal`, and the `Expr` of a filter —
 /// are the parser's AST types, reused here exactly as the logical plan reuses
 /// them: they are stable, semantic value types with no behavior to re-model.
+// The `…Exec` suffix is the conventional name for a physical operator and is
+// shared by every variant on purpose, so the variant-name lint does not apply.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalPlan {
     CreateTableExec {

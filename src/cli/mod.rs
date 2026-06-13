@@ -52,6 +52,32 @@ pub enum Command {
         optimize: bool,
     },
 
+    /// Execute a SQL statement end to end and print its result. Runs the full
+    /// pipeline (parse, plan, optimize, lower, execute) against storage; exits
+    /// non-zero with a message on stderr on any error.
+    Query {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// The SQL statement to execute, as a single string.
+        #[arg(long)]
+        sql: String,
+    },
+
+    /// Print the logical and physical plans for a SQL query without running it.
+    /// Reads the catalog to validate references; exits non-zero on a parse or
+    /// planning error.
+    Explain {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// The SQL statement to plan, as a single string.
+        #[arg(long)]
+        sql: String,
+        /// Apply logical optimizations before planning, matching what `query`
+        /// executes.
+        #[arg(long)]
+        optimize: bool,
+    },
+
     Doctor {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,

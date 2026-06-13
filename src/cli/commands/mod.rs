@@ -1,7 +1,9 @@
 pub mod doctor;
+pub mod explain;
 pub mod explain_logical;
 pub mod init;
 pub mod parse;
+pub mod query;
 pub mod row_delete;
 pub mod row_get;
 pub mod row_insert;
