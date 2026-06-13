@@ -11,7 +11,10 @@
 //! lands, its arm returns a plain "not yet implemented" error rather than
 //! panicking, so partial builds stay runnable.
 
+use crate::catalog::schema::{Column, ColumnType, Schema};
+use crate::catalog::tables::TableOptions;
 use crate::error::Error;
+use crate::parser::ast::{ColumnDef, DataType};
 use crate::storage::Storage;
 
 use super::BatchStream;
@@ -22,7 +25,9 @@ use super::result::{QueryResult, collect_rows};
 /// and report an effect; a relational plan is drained into rows.
 pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResult, Error> {
     match plan {
-        PhysicalPlan::CreateTableExec { .. } => exec_create_table(plan, store),
+        PhysicalPlan::CreateTableExec { table, columns } => {
+            exec_create_table(table, columns, store)
+        }
         PhysicalPlan::InsertExec { .. } => exec_insert(plan, store),
         _ => {
             let names = output_columns(plan)?;
@@ -78,8 +83,35 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
     }
 }
 
-fn exec_create_table(_plan: &PhysicalPlan, _store: &mut dyn Storage) -> Result<QueryResult, Error> {
-    Err(not_implemented("CreateTableExec"))
+/// Run a CREATE TABLE: build the catalog schema from the parsed column
+/// definitions and register the table. Storage creates its on-disk structures
+/// and persists the schema, so the table survives a restart.
+fn exec_create_table(
+    table: &str,
+    columns: &[ColumnDef],
+    store: &mut dyn Storage,
+) -> Result<QueryResult, Error> {
+    let schema = Schema {
+        columns: columns
+            .iter()
+            .map(|c| Column {
+                name: c.name.clone(),
+                ty: column_type(c.ty),
+                nullable: c.nullable,
+            })
+            .collect(),
+    };
+    let id = store.create_table(table, schema, TableOptions::default())?;
+    Ok(QueryResult::Affected(format!(
+        "Created table '{table}' (id={id})"
+    )))
+}
+
+fn column_type(ty: DataType) -> ColumnType {
+    match ty {
+        DataType::Int => ColumnType::Int,
+        DataType::Text => ColumnType::Text,
+    }
 }
 
 fn exec_insert(_plan: &PhysicalPlan, _store: &mut dyn Storage) -> Result<QueryResult, Error> {
@@ -142,5 +174,54 @@ mod tests {
             values: vec![],
         };
         assert!(output_columns(&plan).is_err());
+    }
+
+    #[test]
+    fn create_table_exec_registers_table_in_catalog() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::CreateTableExec {
+            table: "products".into(),
+            columns: vec![
+                ColumnDef {
+                    name: "sku".into(),
+                    ty: DataType::Int,
+                    nullable: false,
+                },
+                ColumnDef {
+                    name: "label".into(),
+                    ty: DataType::Text,
+                    nullable: true,
+                },
+            ],
+        };
+
+        let result = execute(&plan, &mut store).unwrap();
+        assert!(matches!(result, QueryResult::Affected(_)));
+
+        assert!(
+            store
+                .list_tables()
+                .unwrap()
+                .contains(&"products".to_string())
+        );
+        let desc = store.describe_table("products").unwrap();
+        assert_eq!(desc.schema.columns.len(), 2);
+        assert_eq!(desc.schema.columns[0].name, "sku");
+        assert!(!desc.schema.columns[0].nullable);
+        assert!(desc.schema.columns[1].nullable);
+    }
+
+    #[test]
+    fn create_table_exec_rejects_duplicate_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::CreateTableExec {
+            table: "users".into(),
+            columns: vec![ColumnDef {
+                name: "id".into(),
+                ty: DataType::Int,
+                nullable: false,
+            }],
+        };
+        assert!(execute(&plan, &mut store).is_err());
     }
 }
