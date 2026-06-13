@@ -111,17 +111,13 @@ impl Header {
 
     /// Smallest live value in an INT column, or `None` when the column has
     /// no live values (empty / all-NULL / all-deleted) or isn't INT-typed.
-    /// The sentinel pair `min > max` encodes the empty case.
-    //
-    // Exposed for the future skip-pruning consumer; covered by in-module
-    // tests today.
-    #[allow(dead_code)]
+    /// The sentinel pair `min > max` encodes the empty case. Used by the
+    /// vectorized scan to skip row groups that cannot match a predicate.
     pub fn int_min(&self) -> Option<i64> {
         self.int_range().map(|(min, _)| min)
     }
 
     /// Largest live value in an INT column, see [`Header::int_min`].
-    #[allow(dead_code)]
     pub fn int_max(&self) -> Option<i64> {
         self.int_range().map(|(_, max)| max)
     }
