@@ -43,9 +43,17 @@ pub(super) fn execute_stream<'a>(
     plan: &'a PhysicalPlan,
     store: &'a dyn Storage,
 ) -> Result<BatchStream<'a>, Error> {
-    let _ = store;
     match plan {
-        PhysicalPlan::TableScanExec { .. } => Err(not_implemented("TableScanExec")),
+        PhysicalPlan::TableScanExec {
+            table,
+            projection,
+            prune,
+        } => {
+            let handle = store.open_table(table)?;
+            // `scan_batches` returns a fully owned iterator, so the local handle
+            // can drop here; the stream reads through the `store` borrow alone.
+            store.scan_batches(&handle, projection.as_deref(), prune)
+        }
         PhysicalPlan::FilterExec { .. } => Err(not_implemented("FilterExec")),
         PhysicalPlan::ProjectionExec { .. } => Err(not_implemented("ProjectionExec")),
         PhysicalPlan::SortExec { .. } => Err(not_implemented("SortExec")),
@@ -148,6 +156,10 @@ fn not_implemented(op: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::metadata;
+    use crate::storage::column_store::ColumnStore;
+    use crate::storage::{ColumnBatch, ScanCompare, ScanPredicate};
+    use tempfile::TempDir;
 
     fn scan(projection: Option<Vec<String>>) -> PhysicalPlan {
         PhysicalPlan::TableScanExec {
@@ -299,5 +311,124 @@ mod tests {
         let (_tmp, mut store) = crate::execution::test_support::seeded_store();
         let plan = insert("ghosts", vec![Literal::Int(1)]);
         assert!(execute(&plan, &mut store).is_err());
+    }
+
+    /// A store holding `t(id INT NOT NULL, label TEXT)` with a row-group size of
+    /// 2, so the given ids land two per group — enough to exercise whole-group
+    /// skipping.
+    fn store_with_groups(ids: &[i64]) -> (TempDir, ColumnStore) {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("db");
+        metadata::initialize(&db).unwrap();
+        let mut store = ColumnStore::open(&db).unwrap();
+        let schema = Schema {
+            columns: vec![
+                Column {
+                    name: "id".into(),
+                    ty: ColumnType::Int,
+                    nullable: false,
+                },
+                Column {
+                    name: "label".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+            ],
+        };
+        store
+            .create_table(
+                "t",
+                schema,
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let handle = store.open_table("t").unwrap();
+        for &i in ids {
+            store
+                .insert(
+                    &handle,
+                    Record {
+                        values: vec![Value::Int(i), Value::Text(format!("r{i}"))],
+                    },
+                )
+                .unwrap();
+        }
+        (tmp, store)
+    }
+
+    fn scan_t(projection: Option<Vec<String>>, prune: Vec<ScanPredicate>) -> PhysicalPlan {
+        PhysicalPlan::TableScanExec {
+            table: "t".into(),
+            projection,
+            prune,
+        }
+    }
+
+    fn run_scan(plan: &PhysicalPlan, store: &dyn Storage) -> Vec<ColumnBatch> {
+        execute_stream(plan, store)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn scanned_ids(batches: &[ColumnBatch]) -> Vec<i64> {
+        batches
+            .iter()
+            .flat_map(|b| {
+                b.columns[0].iter().map(|v| match v {
+                    Value::Int(n) => *n,
+                    other => panic!("expected int id, got {other:?}"),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn table_scan_reads_every_row_in_schema_column_order() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3]);
+        let batches = run_scan(&scan_t(None, vec![]), &store);
+        assert_eq!(
+            batches[0].names,
+            vec!["id".to_string(), "label".to_string()]
+        );
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn table_scan_projection_decodes_only_requested_columns() {
+        let (_tmp, store) = store_with_groups(&[1, 2]);
+        let batches = run_scan(&scan_t(Some(vec!["id".into()]), vec![]), &store);
+        assert_eq!(batches[0].names, vec!["id".to_string()]);
+        assert_eq!(batches[0].columns.len(), 1);
+    }
+
+    #[test]
+    fn table_scan_skips_groups_proven_non_matching_but_does_not_filter_rows() {
+        // ids 1..=6 → groups [1,2] [3,4] [5,6]. `id > 3` prunes [1,2] (max 2),
+        // keeps [3,4] and [5,6]. The kept group [3,4] still yields id=3, which
+        // does not satisfy the predicate: a scan skips groups, it does not
+        // filter rows — that is FilterExec's job.
+        let (_tmp, store) = store_with_groups(&[1, 2, 3, 4, 5, 6]);
+        let prune = vec![ScanPredicate {
+            column: "id".into(),
+            op: ScanCompare::Gt,
+            value: 3,
+        }];
+        let batches = run_scan(&scan_t(Some(vec!["id".into()]), prune), &store);
+        assert_eq!(scanned_ids(&batches), vec![3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn table_scan_skips_all_groups_when_nothing_can_match() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3, 4]);
+        let prune = vec![ScanPredicate {
+            column: "id".into(),
+            op: ScanCompare::Gt,
+            value: 100,
+        }];
+        let batches = run_scan(&scan_t(Some(vec!["id".into()]), prune), &store);
+        assert!(batches.is_empty());
     }
 }

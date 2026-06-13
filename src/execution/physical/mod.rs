@@ -8,6 +8,7 @@
 
 mod executor;
 mod plan;
+mod prune;
 mod result;
 
 use crate::error::Error;
