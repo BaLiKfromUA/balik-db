@@ -8,6 +8,7 @@
 
 mod executor;
 mod expr;
+mod lower;
 mod plan;
 mod prune;
 mod result;
@@ -16,6 +17,7 @@ use crate::error::Error;
 use crate::storage::ColumnBatch;
 
 pub use executor::execute;
+pub use lower::lower;
 pub use plan::PhysicalPlan;
 pub use result::QueryResult;
 

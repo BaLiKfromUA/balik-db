@@ -12,4 +12,4 @@ mod physical;
 mod test_support;
 
 pub use logical::{LogicalPlan, optimize, plan};
-pub use physical::{PhysicalPlan, QueryResult, execute};
+pub use physical::{PhysicalPlan, QueryResult, execute, lower};
