@@ -86,7 +86,25 @@ pub(super) fn execute_stream<'a>(
                 None => Ok(Box::new(std::iter::empty())),
             }
         }
-        PhysicalPlan::LimitExec { .. } => Err(not_implemented("LimitExec")),
+        PhysicalPlan::LimitExec { count, input } => {
+            let mut source = execute_stream(input, store)?;
+            let mut remaining = usize::try_from(*count).unwrap_or(usize::MAX);
+            // Stay lazy: once the budget is spent, stop *without* pulling another
+            // batch — so a scan need not decode row groups the limit never reaches.
+            Ok(Box::new(std::iter::from_fn(move || {
+                if remaining == 0 {
+                    return None;
+                }
+                match source.next()? {
+                    Err(e) => Some(Err(e)),
+                    Ok(batch) => {
+                        let take = remaining.min(batch.num_rows());
+                        remaining -= take;
+                        Some(Ok(truncate_batch(batch, take)))
+                    }
+                }
+            })))
+        }
         PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => Err(
             Error::other("DDL/DML operator cannot appear inside a query pipeline"),
         ),
@@ -280,6 +298,17 @@ fn order_values(a: &Value, b: &Value) -> Ordering {
         (Value::Int(_), Value::Text(_)) => Ordering::Less,
         (Value::Text(_), Value::Int(_)) => Ordering::Greater,
     }
+}
+
+/// Keep the first `n` rows of `batch`, consuming it in place. `n` at or above
+/// the row count returns the batch unchanged.
+fn truncate_batch(mut batch: ColumnBatch, n: usize) -> ColumnBatch {
+    if n < batch.num_rows() {
+        for col in &mut batch.columns {
+            col.truncate(n);
+        }
+    }
+    batch
 }
 
 fn not_implemented(op: &str) -> Error {
@@ -773,6 +802,56 @@ mod tests {
         let scan = scan_t(Some(vec!["id".into()]), vec![]);
         let plan = sort("label", false, scan);
         assert!(execute_stream(&plan, &store).is_err());
+    }
+
+    fn limit(count: u64, input: PhysicalPlan) -> PhysicalPlan {
+        PhysicalPlan::LimitExec {
+            count,
+            input: Box::new(input),
+        }
+    }
+
+    #[test]
+    fn limit_exec_caps_rows_below_total() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3, 4, 5, 6]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&limit(2, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2]);
+    }
+
+    #[test]
+    fn limit_exec_above_total_returns_everything() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&limit(10, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn limit_exec_zero_is_empty() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&limit(0, scan), &store);
+        assert_eq!(scanned_ids(&batches), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn limit_exec_truncates_across_a_batch_boundary() {
+        // Row groups of 2: [1,2] [3,4] [5,6]. LIMIT 3 takes the first group whole
+        // and one row of the second.
+        let (_tmp, store) = store_with_groups(&[1, 2, 3, 4, 5, 6]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let batches = run_scan(&limit(3, scan), &store);
+        assert_eq!(scanned_ids(&batches), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn limit_exec_applies_after_filter() {
+        let (_tmp, store) = store_with_groups(&[1, 2, 3, 4, 5, 6]);
+        let scan = scan_t(Some(vec!["id".into()]), vec![]);
+        let filtered = filter(id_cmp(CompareOp::Gt, 2), scan);
+        let batches = run_scan(&limit(2, filtered), &store);
+        assert_eq!(scanned_ids(&batches), vec![3, 4]);
     }
 
     #[test]
