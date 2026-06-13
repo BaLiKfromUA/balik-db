@@ -7,6 +7,7 @@
 //! skip row groups without the rest of the pipeline running.
 
 mod executor;
+mod expr;
 mod plan;
 mod prune;
 mod result;
