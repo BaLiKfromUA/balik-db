@@ -99,7 +99,7 @@ pub enum ScanCompare {
 /// constant is an `i64`. Pruning is a pure optimization — a scan that ignored
 /// every predicate would still be correct — so callers may pass any conjunctive
 /// subset they can extract.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScanPredicate {
     pub column: String,
     pub op: ScanCompare,
