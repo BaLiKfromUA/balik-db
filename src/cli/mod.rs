@@ -95,14 +95,6 @@ pub enum Command {
         table: String,
     },
 
-    /// Print every live row in a table, one per line.
-    TableScan {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        #[arg(long)]
-        table: String,
-    },
-
     /// Delete a single row by its record id.
     RowDelete {
         #[arg(long = "db", default_value = "./balik_db")]

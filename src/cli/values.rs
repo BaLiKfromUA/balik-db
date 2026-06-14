@@ -1,9 +1,9 @@
 //! Stopgap text<->value helpers for the CLI data-plane commands.
 //!
 //! `row-update` needs to turn a `--values` string into a typed `Record`, and
-//! `row-get` / `table-scan` need to print records back. This is a deliberately
-//! small, comma-delimited convenience layer — it is expected to be retired
-//! wholesale once these commands move over to SQL.
+//! `row-get` needs to print a record back. This is a deliberately small,
+//! comma-delimited convenience layer — it is expected to be retired wholesale
+//! once these commands move over to SQL.
 //!
 //! This layer only handles *conversion*: token count (so input is never
 //! silently truncated) and turning each token into a typed `Value`. Semantic

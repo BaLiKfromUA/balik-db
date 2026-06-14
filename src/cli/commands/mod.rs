@@ -9,4 +9,3 @@ pub mod row_update;
 pub mod table_describe;
 pub mod table_drop;
 pub mod table_list;
-pub mod table_scan;

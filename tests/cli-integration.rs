@@ -412,13 +412,11 @@ fn table_scan_lists_rows_after_restart() {
     }
 
     // Fresh process → proves the scan reads from disk, not a cached state.
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
-        .stdout(predicate::str::contains("rid 1: id=2, name=NULL"))
-        .stdout(predicate::str::contains("rid 2: id=3, name=carol"));
+        .stdout(predicate::str::contains("1  | alice"))
+        .stdout(predicate::str::contains("2  | NULL"))
+        .stdout(predicate::str::contains("3  | carol"));
 }
 
 #[test]
@@ -426,11 +424,8 @@ fn table_scan_on_empty_table_reports_no_rows() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
     run_query(db, "CREATE TABLE t (id INT NOT NULL)").success();
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "t"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("(no rows)"));
+    // An empty table prints the header and separator but no data rows.
+    run_query(db, "SELECT * FROM t").success().stdout("id\n--\n");
 }
 
 #[test]
@@ -460,13 +455,12 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         .success()
         .stdout(predicate::str::contains("rid 1: not found"));
 
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+    // The deleted row (bob) is gone; the survivors remain.
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
-        .stdout(predicate::str::contains("rid 2: id=3, name=carol"))
-        .stdout(predicate::str::contains("rid 1").not());
+        .stdout(predicate::str::contains("1  | alice"))
+        .stdout(predicate::str::contains("3  | carol"))
+        .stdout(predicate::str::contains("bob").not());
 }
 
 #[test]
@@ -505,13 +499,12 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
         .assert()
         .success()
         .stdout(predicate::str::contains("rid 0: not found"));
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+    // The pre-update row (alice) is gone; bob and the reassigned alicia remain.
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 1: id=2, name=bob"))
-        .stdout(predicate::str::contains("rid 2: id=1, name=alicia"))
-        .stdout(predicate::str::contains("rid 0").not());
+        .stdout(predicate::str::contains("2  | bob"))
+        .stdout(predicate::str::contains("1  | alicia"))
+        .stdout(predicate::str::contains("alice").not());
 }
 
 #[test]

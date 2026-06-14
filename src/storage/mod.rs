@@ -109,6 +109,7 @@ pub struct ScanPredicate {
 /// Iterator returned by `Storage::scan`. Aliased so the trait signature
 /// doesn't trip clippy's `type_complexity` lint. The `+ 'a` bound ties the
 /// iterator's lifetime to the `&self` borrow that produced it.
+#[allow(dead_code)] // row-oriented scan: see `Storage::scan`
 pub type ScanIter<'a> = Box<dyn Iterator<Item = Result<(Rid, Record), Error>> + 'a>;
 
 /// Iterator returned by `Storage::scan_batches`: one [`ColumnBatch`] per live
@@ -144,6 +145,13 @@ pub trait Storage {
 
     fn delete(&mut self, table: &TableHandle, rid: Rid) -> Result<(), Error>;
 
+    /// Row-oriented full scan yielding `(rid, record)` for every live row.
+    /// No CLI command wires this anymore — reads go through SQL `SELECT`, which
+    /// uses the vectorized [`Storage::scan_batches`]. It is kept because storage
+    /// tests use it to assert rid-level read-back, and a future physical-plan
+    /// implementation of UPDATE / DELETE (which must visit rows by rid) is the
+    /// natural place to reuse it.
+    #[allow(dead_code)]
     fn scan<'a>(&'a self, table: &TableHandle) -> Result<ScanIter<'a>, Error>;
 
     /// Vectorized scan: yield one column-major [`ColumnBatch`] per live row

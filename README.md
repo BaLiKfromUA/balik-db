@@ -88,13 +88,15 @@ rid 1: id=2, total=250
 `INSERT` takes one row per statement; TEXT values are single-quoted (e.g.
 `'Alice'`) and the literal `NULL` maps to SQL NULL on nullable columns.
 
-7. Read all records from table
+7. Read all rows with a query
 
 ```bash
-./balik-cli table-scan --table orders
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 0: id=1, total=100
-rid 1: id=2, total=250
+id | total
+---+------
+1  | 100
+2  | 250
 ```
 
 8. Update a row
@@ -111,10 +113,12 @@ rid 0: updated as rid 2
 
 rid 0: not found
 
-./balik-cli table-scan --table orders
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 1: id=2, total=250
-rid 2: id=1, total=150
+id | total
+---+------
+2  | 250
+1  | 150
 ```
 
 9. Delete a row
@@ -124,9 +128,11 @@ rid 2: id=1, total=150
 
 rid 1: deleted
 
-./balik-cli table-scan --table orders
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 2: id=1, total=150
+id | total
+---+------
+1  | 150
 ```
 
 Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
@@ -297,7 +303,7 @@ src/
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
-    values.rs          // --values parser (row-update) / record renderer (row-get, table-scan)
+    values.rs          // --values parser (row-update) / record renderer (row-get)
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
@@ -308,7 +314,6 @@ src/
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
-      table_scan.rs    // print every live row in a table
       row_get.rs       // fetch one row by rid
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid
