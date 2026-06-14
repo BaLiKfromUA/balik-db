@@ -323,15 +323,24 @@ src/
     lower.rs           // sqlparser tree -> internal AST + structural validation
     error.rs           // ParseError (independent of the storage Error)
   execution/           // query-engine layer above the Storage trait
-    mod.rs             // re-exports planner + optimizer; execution lands here later
-    planner/           // AST -> LogicalPlan
-      mod.rs           // public plan() entry point
+    mod.rs             // re-exports the logical + physical pipeline
+    test_support.rs    // shared in-memory storage fixtures for tests
+    logical/           // AST -> LogicalPlan -> optimized LogicalPlan
+      mod.rs           // public plan() + optimize() entry points
       plan.rs          // LogicalPlan structures + tree Display + JSON
       binder.rs        // binding + catalog validation
-    optimizer/         // LogicalPlan -> LogicalPlan rewrites
-      mod.rs           // public optimize() entry point
-      top_k.rs         // fuse adjacent Sort + Limit into a TopK
-      column_pushdown.rs // record needed columns on each Scan
+      optimizer/       // LogicalPlan -> LogicalPlan rewrites
+        mod.rs         // optimization pipeline
+        top_k.rs       // fuse adjacent Sort + Limit into a TopK
+        column_pushdown.rs // record needed columns on each Scan
+    physical/          // LogicalPlan -> PhysicalPlan -> execution
+      mod.rs           // public lower() + execute() entry points
+      plan.rs          // PhysicalPlan operators + tree Display
+      lower.rs         // LogicalPlan -> PhysicalPlan lowering
+      executor.rs      // pull-based, column-batch operator execution
+      expr.rs          // vectorized predicate / value evaluation
+      prune.rs         // WHERE -> zone-map scan-pruning hints
+      result.rs        // QueryResult collection + table rendering
 tests/
   cli-integration.rs   // end-to-end tests driving the `balik-cli` binary
 ```
