@@ -141,11 +141,18 @@ fn if_init_done_then_doctor_succeeds() {
 fn table_create_then_list_shows_both() {
     let (_tmp, db) = init_db();
 
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)")
-        .success()
-        .stdout(predicate::str::contains("Created table 'users'"));
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success()
+    .stdout(predicate::str::contains("Created table 'users'"));
 
-    run_query(&db, "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)").success();
+    run_query(
+        &db,
+        "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)",
+    )
+    .success();
 
     balik_cli()
         .args(["table-list", "--db", db.to_str().unwrap()])
@@ -218,8 +225,16 @@ fn tables_persist_across_restart() {
     let (_tmp, db) = init_db();
 
     // First invocation: create tables.
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
-    run_query(&db, "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)").success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
+    run_query(
+        &db,
+        "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)",
+    )
+    .success();
 
     // Second invocation: list + describe must read back what the first wrote.
     balik_cli()
@@ -282,7 +297,11 @@ fn table_drop_removes_table() {
 #[test]
 fn table_create_writes_expected_layout() {
     let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
 
     let table_dir = db.join("tables").join("00000001");
     assert!(table_dir.is_dir(), "table dir should exist");
@@ -384,7 +403,11 @@ fn row_insert_get_persist_across_restart() {
 fn row_insert_null_into_not_null_column_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
     run_query(db, "INSERT INTO users VALUES (NULL, 'bob')")
         .failure()
         .stderr(predicate::str::contains("NOT NULL"));
@@ -419,7 +442,9 @@ fn table_scan_on_empty_table_reports_no_rows() {
     let db = db.to_str().unwrap();
     run_query(db, "CREATE TABLE t (id INT NOT NULL)").success();
     // An empty table prints the header and separator but no data rows.
-    run_query(db, "SELECT * FROM t").success().stdout("id\n--\n");
+    run_query(db, "SELECT * FROM t")
+        .success()
+        .stdout("id\n--\n");
 }
 
 #[test]
@@ -427,7 +452,11 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
     for sql in [
         "INSERT INTO users VALUES (1, 'alice')",
         "INSERT INTO users VALUES (2, 'bob')",
@@ -460,7 +489,11 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
     for sql in [
         "INSERT INTO users VALUES (1, 'alice')",
         "INSERT INTO users VALUES (2, 'bob')",
@@ -536,7 +569,11 @@ fn row_delete_unknown_rid_fails() {
 /// Initialize a db with a `users(id INT, name TEXT, age INT)` table.
 fn init_db_with_users() -> (TempDir, std::path::PathBuf) {
     let (tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT, age INT)").success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT, age INT)",
+    )
+    .success();
     (tmp, db)
 }
 
