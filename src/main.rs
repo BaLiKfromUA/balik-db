@@ -33,13 +33,6 @@ fn main() -> ExitCode {
         } => cli::commands::explain::run(&path, &sql, optimize),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
-        cli::Command::TableCreate {
-            path,
-            table,
-            columns,
-            row_group_size,
-        } => cli::commands::table_create::run(&path, &table, &columns, row_group_size)
-            .map_err(Into::into),
         cli::Command::RowInsert {
             path,
             table,

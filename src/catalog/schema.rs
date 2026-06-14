@@ -20,16 +20,6 @@ impl ColumnType {
             Self::Text => "TEXT",
         }
     }
-
-    pub fn parse(s: &str) -> Result<Self, Error> {
-        match s.trim().to_ascii_uppercase().as_str() {
-            "INT" => Ok(Self::Int),
-            "TEXT" => Ok(Self::Text),
-            other => Err(Error::invalid_schema(format!(
-                "unsupported column type '{other}'"
-            ))),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,50 +57,6 @@ impl Schema {
             }
         }
         Ok(())
-    }
-
-    /// Parse the CLI `--columns "id:INT,name:TEXT"` mini-DSL.
-    /// Whitespace around tokens is ignored. Trailing commas and empty entries
-    /// are rejected. A `?` after the type marks the column nullable, e.g.
-    /// `name:TEXT?`; without it the column is NOT NULL.
-    pub fn parse_columns_dsl(s: &str) -> Result<Self, Error> {
-        tracing::debug!(input = %s, "parsing columns DSL");
-        if s.trim().is_empty() {
-            return Err(Error::invalid_schema("column list is empty"));
-        }
-        let mut columns = Vec::new();
-        for part in s.split(',') {
-            let trimmed = part.trim();
-            if trimmed.is_empty() {
-                return Err(Error::invalid_schema(
-                    "empty column entry (extra or trailing comma?)",
-                ));
-            }
-            let (name, ty_str) = trimmed.split_once(':').ok_or_else(|| {
-                Error::invalid_schema(format!(
-                    "column '{trimmed}' is missing ':TYPE' (expected 'name:TYPE')"
-                ))
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(Error::invalid_schema(format!(
-                    "column entry '{trimmed}' has no name"
-                )));
-            }
-            // A trailing `?` on the type marks the column nullable.
-            let (ty_token, nullable) = match ty_str.trim().strip_suffix('?') {
-                Some(rest) => (rest.trim(), true),
-                None => (ty_str.trim(), false),
-            };
-            let ty = ColumnType::parse(ty_token)?;
-            columns.push(Column {
-                name: name.to_string(),
-                ty,
-                nullable,
-            });
-        }
-        tracing::debug!(parsed_columns = columns.len(), "columns DSL parsed");
-        Ok(Schema { columns })
     }
 }
 
@@ -150,21 +96,6 @@ mod tests {
             ty,
             nullable,
         }
-    }
-
-    #[test]
-    fn column_type_parse_accepts_known_types_case_insensitively() {
-        assert_eq!(ColumnType::parse("INT").unwrap(), ColumnType::Int);
-        assert_eq!(ColumnType::parse("int").unwrap(), ColumnType::Int);
-        assert_eq!(ColumnType::parse("  Int  ").unwrap(), ColumnType::Int);
-        assert_eq!(ColumnType::parse("TEXT").unwrap(), ColumnType::Text);
-        assert_eq!(ColumnType::parse("text").unwrap(), ColumnType::Text);
-    }
-
-    #[test]
-    fn column_type_parse_rejects_unknown_types() {
-        let err = ColumnType::parse("FLOAT").unwrap_err();
-        assert!(err.to_string().contains("unsupported column type"));
     }
 
     #[test]
@@ -256,69 +187,5 @@ mod tests {
         };
         let err = schema.validate(&long).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
-    }
-
-    #[test]
-    fn dsl_parses_simple_pair() {
-        let schema = Schema::parse_columns_dsl("id:INT,name:TEXT").unwrap();
-        assert_eq!(
-            schema.columns,
-            vec![
-                col("id", ColumnType::Int, false),
-                col("name", ColumnType::Text, false),
-            ]
-        );
-    }
-
-    #[test]
-    fn dsl_tolerates_whitespace() {
-        let schema = Schema::parse_columns_dsl("  id : INT ,  name : TEXT ").unwrap();
-        assert_eq!(schema.columns.len(), 2);
-        assert_eq!(schema.columns[0].name, "id");
-        assert_eq!(schema.columns[1].name, "name");
-    }
-
-    #[test]
-    fn dsl_rejects_empty_input() {
-        let err = Schema::parse_columns_dsl("").unwrap_err();
-        assert!(err.to_string().contains("empty"));
-        let err = Schema::parse_columns_dsl("   ").unwrap_err();
-        assert!(err.to_string().contains("empty"));
-    }
-
-    #[test]
-    fn dsl_rejects_trailing_comma() {
-        let err = Schema::parse_columns_dsl("id:INT,").unwrap_err();
-        assert!(err.to_string().contains("empty column entry"));
-    }
-
-    #[test]
-    fn dsl_rejects_missing_type() {
-        let err = Schema::parse_columns_dsl("id").unwrap_err();
-        assert!(err.to_string().contains("missing ':TYPE'"));
-    }
-
-    #[test]
-    fn dsl_rejects_unknown_type() {
-        let err = Schema::parse_columns_dsl("id:BLOB").unwrap_err();
-        assert!(err.to_string().contains("unsupported column type"));
-    }
-
-    #[test]
-    fn dsl_marks_nullable_with_question_mark() {
-        let schema = Schema::parse_columns_dsl("id:INT,name:TEXT?").unwrap();
-        assert_eq!(
-            schema.columns,
-            vec![
-                col("id", ColumnType::Int, false),
-                col("name", ColumnType::Text, true),
-            ]
-        );
-    }
-
-    #[test]
-    fn dsl_nullable_tolerates_whitespace_around_marker() {
-        let schema = Schema::parse_columns_dsl("name : TEXT ? ").unwrap();
-        assert_eq!(schema.columns, vec![col("name", ColumnType::Text, true)]);
     }
 }

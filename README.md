@@ -37,10 +37,12 @@ Initialized empty balik database at './balik_db'
 
 3. Create your first table
 
-```bash
-./balik-cli table-create --table orders --columns "id:INT,total:INT"
+Tables are created with SQL through the `query` command:
 
-Created table 'orders' (id=1) in './balik_db'
+```bash
+./balik-cli query --sql "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)"
+
+Created table 'orders' (id=1)
 ```
 
 4. List tables
@@ -291,7 +293,7 @@ src/
   catalog/             // on-disk metadata and table schemas
     mod.rs
     metadata.rs        // bootstrap metadata file (magic, version, ...)
-    schema.rs          // logical column types, schema validation, --columns DSL
+    schema.rs          // logical column types and schema validation
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
@@ -303,7 +305,6 @@ src/
       query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-      table_create.rs  // create a table from a schema DSL
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table

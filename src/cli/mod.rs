@@ -61,22 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Create a new table.
-    TableCreate {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Comma-separated `name:TYPE` pairs, e.g. "id:INT,name:TEXT".
-        /// Supported types: INT, TEXT.
-        #[arg(long)]
-        columns: String,
-        /// Override the default row-group size for this table.
-        #[arg(long = "row-group-size")]
-        row_group_size: Option<u32>,
-    },
-
     /// Insert a row into a table.
     RowInsert {
         #[arg(long = "db", default_value = "./balik_db")]
