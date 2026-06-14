@@ -61,19 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Insert a row into a table.
-    RowInsert {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Comma-separated values matching the table's columns, e.g. "1,Alice".
-        /// Use NULL (case-insensitive) for a NULL value.
-        #[arg(long)]
-        values: String,
-    },
-
     /// Read a single row by its record id.
     RowGet {
         #[arg(long = "db", default_value = "./balik_db")]

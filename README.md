@@ -69,12 +69,14 @@ Columns:
 
 6. Insert rows and read them back
 
+Rows are inserted with SQL through the `query` command:
+
 ```bash
-./balik-cli row-insert --table orders --values "1,100"
+./balik-cli query --sql "INSERT INTO orders VALUES (1, 100)"
 
 Inserted into 'orders' as rid 0
 
-./balik-cli row-insert --table orders --values "2,250"
+./balik-cli query --sql "INSERT INTO orders VALUES (2, 250)"
 
 Inserted into 'orders' as rid 1
 
@@ -83,10 +85,8 @@ Inserted into 'orders' as rid 1
 rid 1: id=2, total=250
 ```
 
-`row-insert --values` is comma-delimited and positional (no quoting / no SQL
-parser yet). The literal `NULL` (case-insensitive) maps to SQL NULL on
-nullable columns. TEXT values therefore cannot contain a comma through this
-interface — to be removed once the SQL parser lands.
+`INSERT` takes one row per statement; TEXT values are single-quoted (e.g.
+`'Alice'`) and the literal `NULL` maps to SQL NULL on nullable columns.
 
 7. Read all records from table
 
@@ -297,7 +297,7 @@ src/
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
-    values.rs          // CLI --values parser / record renderer (retired with SQL parser)
+    values.rs          // --values parser (row-update) / record renderer (row-get, table-scan)
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
@@ -309,7 +309,6 @@ src/
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
       table_scan.rs    // print every live row in a table
-      row_insert.rs    // insert one row, prints assigned rid
       row_get.rs       // fetch one row by rid
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid

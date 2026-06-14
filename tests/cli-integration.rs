@@ -359,30 +359,10 @@ fn row_insert_get_persist_across_restart() {
 
     run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT)").success();
 
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "1,Alice",
-        ])
-        .assert()
+    run_query(db, "INSERT INTO users VALUES (1, 'Alice')")
         .success()
         .stdout(predicate::str::contains("rid 0"));
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "2,NULL",
-        ])
-        .assert()
+    run_query(db, "INSERT INTO users VALUES (2, NULL)")
         .success()
         .stdout(predicate::str::contains("rid 1"));
 
@@ -411,17 +391,7 @@ fn row_insert_null_into_not_null_column_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
     run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "NULL,bob",
-        ])
-        .assert()
+    run_query(db, "INSERT INTO users VALUES (NULL, 'bob')")
         .failure()
         .stderr(predicate::str::contains("NOT NULL"));
 }
@@ -433,19 +403,12 @@ fn table_scan_lists_rows_after_restart() {
 
     run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT)").success();
 
-    for (id, name) in [("1", "alice"), ("2", "NULL"), ("3", "carol")] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                &format!("{id},{name}"),
-            ])
-            .assert()
-            .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, NULL)",
+        "INSERT INTO users VALUES (3, 'carol')",
+    ] {
+        run_query(db, sql).success();
     }
 
     // Fresh process → proves the scan reads from disk, not a cached state.
@@ -476,19 +439,12 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
     let db = db.to_str().unwrap();
 
     run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
-    for (id, name) in [("1", "alice"), ("2", "bob"), ("3", "carol")] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                &format!("{id},{name}"),
-            ])
-            .assert()
-            .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, 'bob')",
+        "INSERT INTO users VALUES (3, 'carol')",
+    ] {
+        run_query(db, sql).success();
     }
 
     balik_cli()
@@ -519,19 +475,11 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
     let db = db.to_str().unwrap();
 
     run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
-    for values in ["1,alice", "2,bob"] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                values,
-            ])
-            .assert()
-            .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, 'bob')",
+    ] {
+        run_query(db, sql).success();
     }
 
     // Update rid 0 — should reassign to rid 2 (next_rid at update time).
