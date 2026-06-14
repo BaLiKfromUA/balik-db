@@ -136,6 +136,12 @@ pub trait Storage {
 
     fn insert(&mut self, table: &TableHandle, record: Record) -> Result<Rid, Error>;
 
+    /// Point read of a single row by rid, `None` if it is absent or tombstoned.
+    /// No CLI command wires this anymore — lookups go through SQL `SELECT ...
+    /// WHERE`. It is kept because storage tests use it to assert point-level
+    /// read-back, and a future physical-plan point lookup or UPDATE / DELETE is
+    /// the natural place to reuse it.
+    #[allow(dead_code)]
     fn get(&self, table: &TableHandle, rid: Rid) -> Result<Option<Record>, Error>;
 
     /// Replace the row at `rid` with `record`. Because updates are modeled

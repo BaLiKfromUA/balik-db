@@ -61,18 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Read a single row by its record id.
-    RowGet {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Record id returned by a prior insert.
-        #[arg(long)]
-        rid: u64,
-    },
-
     /// List all tables in the database.
     TableList {
         #[arg(long = "db", default_value = "./balik_db")]

@@ -518,8 +518,8 @@ correct under concurrent access.
 **Trade-offs we knowingly accept.**
 
 - **No concurrent readers.** The lock is exclusive even for read-only
-  commands (`query`, `row-get`), so a long scan blocks an unrelated
-  read in another process. A future shared/exclusive (reader/writer) split
+  commands (`query`), so a long scan blocks an unrelated read in
+  another process. A future shared/exclusive (reader/writer) split
   could let read-only opens take a shared lock; not worth it for a CLI-driven
   toy DB today.
 - **Whole-database granularity.** The lock covers every table, not just the

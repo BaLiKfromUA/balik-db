@@ -80,13 +80,17 @@ Inserted into 'orders' as rid 0
 
 Inserted into 'orders' as rid 1
 
-./balik-cli row-get --table orders --rid 1
+./balik-cli query --sql "SELECT * FROM orders WHERE id = 2"
 
-rid 1: id=2, total=250
+id | total
+---+------
+2  | 250
 ```
 
 `INSERT` takes one row per statement; TEXT values are single-quoted (e.g.
-`'Alice'`) and the literal `NULL` maps to SQL NULL on nullable columns.
+`'Alice'`) and the literal `NULL` maps to SQL NULL on nullable columns. There
+is no lookup by record id — rows are addressed by their data through a
+`SELECT ... WHERE` predicate.
 
 7. Read all rows with a query
 
@@ -108,10 +112,6 @@ old one becomes a tombstone and the new value is appended at the tail.
 ./balik-cli row-update --table orders --rid 0 --values "1,150"
 
 rid 0: updated as rid 2
-
-./balik-cli row-get --table orders --rid 0
-
-rid 0: not found
 
 ./balik-cli query --sql "SELECT * FROM orders"
 
@@ -303,7 +303,7 @@ src/
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
-    values.rs          // --values parser (row-update) / record renderer (row-get)
+    values.rs          // --values parser for row-update
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
@@ -314,7 +314,6 @@ src/
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
-      row_get.rs       // fetch one row by rid
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation

@@ -367,23 +367,17 @@ fn row_insert_get_persist_across_restart() {
         .stdout(predicate::str::contains("rid 1"));
 
     // Each invocation is a fresh process, so reading back proves durability.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
+    run_query(db, "SELECT * FROM users WHERE id = 1")
         .success()
-        .stdout(predicate::str::contains("id=1, name=Alice"));
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+        .stdout(predicate::str::contains("1  | Alice"));
+    run_query(db, "SELECT * FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("id=2, name=NULL"));
+        .stdout(predicate::str::contains("2  | NULL"));
 
-    // An id past the end reads back as not found, not an error.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "99"])
-        .assert()
+    // A value that matches no row comes back as an empty result, not an error.
+    run_query(db, "SELECT * FROM users WHERE id = 99")
         .success()
-        .stdout(predicate::str::contains("not found"));
+        .stdout("id | name\n---+-----\n");
 }
 
 #[test]
@@ -448,12 +442,10 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         .success()
         .stdout(predicate::str::contains("rid 1: deleted"));
 
-    // Fresh process → tombstone read back from disk, not memory.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+    // Fresh process → the tombstoned row (bob, id 2) no longer matches a lookup.
+    run_query(db, "SELECT * FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("rid 1: not found"));
+        .stdout("id | name\n---+-----\n");
 
     // The deleted row (bob) is gone; the survivors remain.
     run_query(db, "SELECT * FROM users")
@@ -493,12 +485,12 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
         .success()
         .stdout(predicate::str::contains("rid 0: updated as rid 2"));
 
-    // Fresh process → updated row + tombstone read from disk.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
+    // Fresh process → a lookup on the updated row reads back the new value.
+    // (The rid changed, but the row is addressable only by its data now.)
+    run_query(db, "SELECT * FROM users WHERE id = 1")
         .success()
-        .stdout(predicate::str::contains("rid 0: not found"));
+        .stdout(predicate::str::contains("alicia"))
+        .stdout(predicate::str::contains("alice").not());
     // The pre-update row (alice) is gone; bob and the reassigned alicia remain.
     run_query(db, "SELECT * FROM users")
         .success()
