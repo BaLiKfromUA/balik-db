@@ -1,9 +1,8 @@
 //! Stopgap text<->value helpers for the CLI data-plane commands.
 //!
-//! `row-insert` / `row-update` need to turn a `--values` string into a typed
-//! `Record`, and `row-get` / `table-scan` need to print records back. This is
-//! a deliberately small, comma-delimited convenience layer — it is expected to
-//! be retired wholesale once the SQL parser can produce values directly.
+//! `row-update` needs to turn a `--values` string into a typed `Record`. This
+//! is a deliberately small, comma-delimited convenience layer — it is expected
+//! to be retired wholesale once that command moves over to SQL.
 //!
 //! This layer only handles *conversion*: token count (so input is never
 //! silently truncated) and turning each token into a typed `Value`. Semantic
@@ -46,26 +45,6 @@ pub fn parse_values(schema: &Schema, s: &str) -> Result<Record, Error> {
         values.push(value);
     }
     Ok(Record { values })
-}
-
-/// Render one value for human-readable CLI output. NULL prints as `NULL`.
-pub fn render_value(value: &Value) -> String {
-    match value {
-        Value::Int(n) => n.to_string(),
-        Value::Text(s) => s.clone(),
-        Value::Null => "NULL".to_string(),
-    }
-}
-
-/// Render a record as `col=value, col=value` in the schema's column order.
-pub fn render_record(schema: &Schema, record: &Record) -> String {
-    schema
-        .columns
-        .iter()
-        .zip(&record.values)
-        .map(|(col, value)| format!("{}={}", col.name, render_value(value)))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -122,13 +101,5 @@ mod tests {
             r.values,
             vec![Value::Null, Value::Text("alice".to_string())]
         );
-    }
-
-    #[test]
-    fn renders_record_in_column_order() {
-        let r = parse_values(&schema(), "7,zed").unwrap();
-        assert_eq!(render_record(&schema(), &r), "id=7, name=zed");
-        let r = parse_values(&schema(), "7,NULL").unwrap();
-        assert_eq!(render_record(&schema(), &r), "id=7, name=NULL");
     }
 }

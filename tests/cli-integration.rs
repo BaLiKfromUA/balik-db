@@ -141,32 +141,18 @@ fn if_init_done_then_doctor_succeeds() {
 fn table_create_then_list_shows_both() {
     let (_tmp, db) = init_db();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Created table 'users'"));
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success()
+    .stdout(predicate::str::contains("Created table 'users'"));
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "orders",
-            "--columns",
-            "id:INT,total:INT",
-        ])
-        .assert()
-        .success();
+    run_query(
+        &db,
+        "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)",
+    )
+    .success();
 
     balik_cli()
         .args(["table-list", "--db", db.to_str().unwrap()])
@@ -179,20 +165,11 @@ fn table_create_then_list_shows_both() {
 #[test]
 fn table_describe_shows_schema() {
     let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT,age:INT",
-            "--row-group-size",
-            "4096",
-        ])
-        .assert()
-        .success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL, age INT NOT NULL)",
+    )
+    .success();
 
     balik_cli()
         .args([
@@ -206,7 +183,7 @@ fn table_describe_shows_schema() {
         .success()
         .stdout(predicate::str::contains("Table:          users"))
         .stdout(predicate::str::contains("Storage:        column-store"))
-        .stdout(predicate::str::contains("Row group size: 4096"))
+        .stdout(predicate::str::contains("Row group size: 8192"))
         .stdout(predicate::str::contains("id"))
         .stdout(predicate::str::contains("INT"))
         .stdout(predicate::str::contains("name"))
@@ -216,30 +193,9 @@ fn table_describe_shows_schema() {
 #[test]
 fn table_create_duplicate_name_fails() {
     let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
-        .success();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)")
         .failure()
         .stderr(predicate::str::contains("already exists"));
 }
@@ -249,49 +205,19 @@ fn table_create_with_invalid_schema_fails() {
     let (_tmp, db) = init_db();
 
     // unknown type
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:BLOB",
-        ])
-        .assert()
+    run_query(&db, "CREATE TABLE users (id BLOB)")
         .failure()
-        .stderr(predicate::str::contains("unsupported column type"));
+        .stderr(predicate::str::contains("column type `BLOB`"));
 
     // duplicate column
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,id:TEXT",
-        ])
-        .assert()
+    run_query(&db, "CREATE TABLE users (id INT, id TEXT)")
         .failure()
         .stderr(predicate::str::contains("duplicate column name"));
 
     // invalid table name
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "1users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
+    run_query(&db, "CREATE TABLE 1users (id INT)")
         .failure()
-        .stderr(predicate::str::contains("must start with a letter"));
+        .stderr(predicate::str::contains("sql parser error"));
 }
 
 #[test]
@@ -299,30 +225,16 @@ fn tables_persist_across_restart() {
     let (_tmp, db) = init_db();
 
     // First invocation: create tables.
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "orders",
-            "--columns",
-            "id:INT,total:INT",
-        ])
-        .assert()
-        .success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
+    run_query(
+        &db,
+        "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)",
+    )
+    .success();
 
     // Second invocation: list + describe must read back what the first wrote.
     balik_cli()
@@ -349,18 +261,7 @@ fn tables_persist_across_restart() {
 #[test]
 fn table_drop_removes_table() {
     let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
-        .success();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
 
     balik_cli()
         .args([
@@ -396,18 +297,11 @@ fn table_drop_removes_table() {
 #[test]
 fn table_create_writes_expected_layout() {
     let (_tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
 
     let table_dir = db.join("tables").join("00000001");
     assert!(table_dir.is_dir(), "table dir should exist");
@@ -470,17 +364,7 @@ fn table_create_without_init_fails() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("not-a-db");
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)")
         .failure()
         .stderr(predicate::str::contains(
             "not an initialized balik database",
@@ -492,93 +376,39 @@ fn row_insert_get_persist_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT?",
-        ])
-        .assert()
-        .success();
+    run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT)").success();
 
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "1,Alice",
-        ])
-        .assert()
+    run_query(db, "INSERT INTO users VALUES (1, 'Alice')")
         .success()
         .stdout(predicate::str::contains("rid 0"));
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "2,NULL",
-        ])
-        .assert()
+    run_query(db, "INSERT INTO users VALUES (2, NULL)")
         .success()
         .stdout(predicate::str::contains("rid 1"));
 
     // Each invocation is a fresh process, so reading back proves durability.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
+    run_query(db, "SELECT * FROM users WHERE id = 1")
         .success()
-        .stdout(predicate::str::contains("id=1, name=Alice"));
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+        .stdout(predicate::str::contains("1  | Alice"));
+    run_query(db, "SELECT * FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("id=2, name=NULL"));
+        .stdout(predicate::str::contains("2  | NULL"));
 
-    // An id past the end reads back as not found, not an error.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "99"])
-        .assert()
+    // A value that matches no row comes back as an empty result, not an error.
+    run_query(db, "SELECT * FROM users WHERE id = 99")
         .success()
-        .stdout(predicate::str::contains("not found"));
+        .stdout("id | name\n---+-----\n");
 }
 
 #[test]
 fn row_insert_null_into_not_null_column_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success();
-    balik_cli()
-        .args([
-            "row-insert",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--values",
-            "NULL,bob",
-        ])
-        .assert()
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
+    run_query(db, "INSERT INTO users VALUES (NULL, 'bob')")
         .failure()
         .stderr(predicate::str::contains("NOT NULL"));
 }
@@ -588,65 +418,33 @@ fn table_scan_lists_rows_after_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT?",
-        ])
-        .assert()
-        .success();
+    run_query(db, "CREATE TABLE users (id INT NOT NULL, name TEXT)").success();
 
-    for (id, name) in [("1", "alice"), ("2", "NULL"), ("3", "carol")] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                &format!("{id},{name}"),
-            ])
-            .assert()
-            .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, NULL)",
+        "INSERT INTO users VALUES (3, 'carol')",
+    ] {
+        run_query(db, sql).success();
     }
 
     // Fresh process → proves the scan reads from disk, not a cached state.
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
-        .stdout(predicate::str::contains("rid 1: id=2, name=NULL"))
-        .stdout(predicate::str::contains("rid 2: id=3, name=carol"));
+        .stdout(predicate::str::contains("1  | alice"))
+        .stdout(predicate::str::contains("2  | NULL"))
+        .stdout(predicate::str::contains("3  | carol"));
 }
 
 #[test]
 fn table_scan_on_empty_table_reports_no_rows() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "t",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
-        .success();
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "t"])
-        .assert()
+    run_query(db, "CREATE TABLE t (id INT NOT NULL)").success();
+    // An empty table prints the header and separator but no data rows.
+    run_query(db, "SELECT * FROM t")
         .success()
-        .stdout(predicate::str::contains("(no rows)"));
+        .stdout("id\n--\n");
 }
 
 #[test]
@@ -654,31 +452,17 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success();
-    for (id, name) in [("1", "alice"), ("2", "bob"), ("3", "carol")] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                &format!("{id},{name}"),
-            ])
-            .assert()
-            .success();
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, 'bob')",
+        "INSERT INTO users VALUES (3, 'carol')",
+    ] {
+        run_query(db, sql).success();
     }
 
     balik_cli()
@@ -687,20 +471,17 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         .success()
         .stdout(predicate::str::contains("rid 1: deleted"));
 
-    // Fresh process → tombstone read back from disk, not memory.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+    // Fresh process → the tombstoned row (bob, id 2) no longer matches a lookup.
+    run_query(db, "SELECT * FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("rid 1: not found"));
+        .stdout("id | name\n---+-----\n");
 
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+    // The deleted row (bob) is gone; the survivors remain.
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 0: id=1, name=alice"))
-        .stdout(predicate::str::contains("rid 2: id=3, name=carol"))
-        .stdout(predicate::str::contains("rid 1").not());
+        .stdout(predicate::str::contains("1  | alice"))
+        .stdout(predicate::str::contains("3  | carol"))
+        .stdout(predicate::str::contains("bob").not());
 }
 
 #[test]
@@ -708,31 +489,16 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT",
-        ])
-        .assert()
-        .success();
-    for values in ["1,alice", "2,bob"] {
-        balik_cli()
-            .args([
-                "row-insert",
-                "--db",
-                db,
-                "--table",
-                "users",
-                "--values",
-                values,
-            ])
-            .assert()
-            .success();
+    run_query(
+        db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
+    for sql in [
+        "INSERT INTO users VALUES (1, 'alice')",
+        "INSERT INTO users VALUES (2, 'bob')",
+    ] {
+        run_query(db, sql).success();
     }
 
     // Update rid 0 — should reassign to rid 2 (next_rid at update time).
@@ -752,37 +518,25 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
         .success()
         .stdout(predicate::str::contains("rid 0: updated as rid 2"));
 
-    // Fresh process → updated row + tombstone read from disk.
-    balik_cli()
-        .args(["row-get", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
+    // Fresh process → a lookup on the updated row reads back the new value.
+    // (The rid changed, but the row is addressable only by its data now.)
+    run_query(db, "SELECT * FROM users WHERE id = 1")
         .success()
-        .stdout(predicate::str::contains("rid 0: not found"));
-    balik_cli()
-        .args(["table-scan", "--db", db, "--table", "users"])
-        .assert()
+        .stdout(predicate::str::contains("alicia"))
+        .stdout(predicate::str::contains("alice").not());
+    // The pre-update row (alice) is gone; bob and the reassigned alicia remain.
+    run_query(db, "SELECT * FROM users")
         .success()
-        .stdout(predicate::str::contains("rid 1: id=2, name=bob"))
-        .stdout(predicate::str::contains("rid 2: id=1, name=alicia"))
-        .stdout(predicate::str::contains("rid 0").not());
+        .stdout(predicate::str::contains("2  | bob"))
+        .stdout(predicate::str::contains("1  | alicia"))
+        .stdout(predicate::str::contains("alice").not());
 }
 
 #[test]
 fn row_update_unknown_rid_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
-        .success();
+    run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
     balik_cli()
         .args([
             "row-update",
@@ -804,18 +558,7 @@ fn row_update_unknown_rid_fails() {
 fn row_delete_unknown_rid_fails() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--columns",
-            "id:INT",
-        ])
-        .assert()
-        .success();
+    run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
     balik_cli()
         .args(["row-delete", "--db", db, "--table", "users", "--rid", "0"])
         .assert()
@@ -826,24 +569,17 @@ fn row_delete_unknown_rid_fails() {
 /// Initialize a db with a `users(id INT, name TEXT, age INT)` table.
 fn init_db_with_users() -> (TempDir, std::path::PathBuf) {
     let (tmp, db) = init_db();
-    balik_cli()
-        .args([
-            "table-create",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-            "--columns",
-            "id:INT,name:TEXT?,age:INT?",
-        ])
-        .assert()
-        .success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT, age INT)",
+    )
+    .success();
     (tmp, db)
 }
 
-fn run_query(db: &std::path::Path, sql: &str) -> assert_cmd::assert::Assert {
+fn run_query(db: impl AsRef<std::path::Path>, sql: &str) -> assert_cmd::assert::Assert {
     balik_cli()
-        .args(["query", "--db", db.to_str().unwrap(), "--sql", sql])
+        .args(["query", "--db", db.as_ref().to_str().unwrap(), "--sql", sql])
         .assert()
 }
 

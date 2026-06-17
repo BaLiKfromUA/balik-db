@@ -37,10 +37,12 @@ Initialized empty balik database at './balik_db'
 
 3. Create your first table
 
-```bash
-./balik-cli table-create --table orders --columns "id:INT,total:INT"
+Tables are created with SQL through the `query` command:
 
-Created table 'orders' (id=1) in './balik_db'
+```bash
+./balik-cli query --sql "CREATE TABLE orders (id INT NOT NULL, total INT NOT NULL)"
+
+Created table 'orders' (id=1)
 ```
 
 4. List tables
@@ -67,32 +69,38 @@ Columns:
 
 6. Insert rows and read them back
 
+Rows are inserted with SQL through the `query` command:
+
 ```bash
-./balik-cli row-insert --table orders --values "1,100"
+./balik-cli query --sql "INSERT INTO orders VALUES (1, 100)"
 
 Inserted into 'orders' as rid 0
 
-./balik-cli row-insert --table orders --values "2,250"
+./balik-cli query --sql "INSERT INTO orders VALUES (2, 250)"
 
 Inserted into 'orders' as rid 1
 
-./balik-cli row-get --table orders --rid 1
+./balik-cli query --sql "SELECT * FROM orders WHERE id = 2"
 
-rid 1: id=2, total=250
+id | total
+---+------
+2  | 250
 ```
 
-`row-insert --values` is comma-delimited and positional (no quoting / no SQL
-parser yet). The literal `NULL` (case-insensitive) maps to SQL NULL on
-nullable columns. TEXT values therefore cannot contain a comma through this
-interface — to be removed once the SQL parser lands.
+`INSERT` takes one row per statement; TEXT values are single-quoted (e.g.
+`'Alice'`) and the literal `NULL` maps to SQL NULL on nullable columns. There
+is no lookup by record id — rows are addressed by their data through a
+`SELECT ... WHERE` predicate.
 
-7. Read all records from table
+7. Read all rows with a query
 
 ```bash
-./balik-cli table-scan --table orders
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 0: id=1, total=100
-rid 1: id=2, total=250
+id | total
+---+------
+1  | 100
+2  | 250
 ```
 
 8. Update a row
@@ -105,14 +113,12 @@ old one becomes a tombstone and the new value is appended at the tail.
 
 rid 0: updated as rid 2
 
-./balik-cli row-get --table orders --rid 0
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 0: not found
-
-./balik-cli table-scan --table orders
-
-rid 1: id=2, total=250
-rid 2: id=1, total=150
+id | total
+---+------
+2  | 250
+1  | 150
 ```
 
 9. Delete a row
@@ -122,9 +128,11 @@ rid 2: id=1, total=150
 
 rid 1: deleted
 
-./balik-cli table-scan --table orders
+./balik-cli query --sql "SELECT * FROM orders"
 
-rid 2: id=1, total=150
+id | total
+---+------
+1  | 150
 ```
 
 Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
@@ -291,11 +299,11 @@ src/
   catalog/             // on-disk metadata and table schemas
     mod.rs
     metadata.rs        // bootstrap metadata file (magic, version, ...)
-    schema.rs          // logical column types, schema validation, --columns DSL
+    schema.rs          // logical column types and schema validation
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
-    values.rs          // CLI --values parser / record renderer (retired with SQL parser)
+    values.rs          // --values parser for row-update
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
@@ -303,13 +311,9 @@ src/
       query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-      table_create.rs  // create a table from a schema DSL
       table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
       table_drop.rs    // remove a table
-      table_scan.rs    // print every live row in a table
-      row_insert.rs    // insert one row, prints assigned rid
-      row_get.rs       // fetch one row by rid
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation

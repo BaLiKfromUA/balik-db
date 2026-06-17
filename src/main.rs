@@ -33,21 +33,6 @@ fn main() -> ExitCode {
         } => cli::commands::explain::run(&path, &sql, optimize),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
-        cli::Command::TableCreate {
-            path,
-            table,
-            columns,
-            row_group_size,
-        } => cli::commands::table_create::run(&path, &table, &columns, row_group_size)
-            .map_err(Into::into),
-        cli::Command::RowInsert {
-            path,
-            table,
-            values,
-        } => cli::commands::row_insert::run(&path, &table, &values).map_err(Into::into),
-        cli::Command::RowGet { path, table, rid } => {
-            cli::commands::row_get::run(&path, &table, rid).map_err(Into::into)
-        }
         cli::Command::TableList { path } => {
             cli::commands::table_list::run(&path).map_err(Into::into)
         }
@@ -56,9 +41,6 @@ fn main() -> ExitCode {
         }
         cli::Command::TableDrop { path, table } => {
             cli::commands::table_drop::run(&path, &table).map_err(Into::into)
-        }
-        cli::Command::TableScan { path, table } => {
-            cli::commands::table_scan::run(&path, &table).map_err(Into::into)
         }
         cli::Command::RowDelete { path, table, rid } => {
             cli::commands::row_delete::run(&path, &table, rid).map_err(Into::into)

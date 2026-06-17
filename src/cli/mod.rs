@@ -61,47 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Create a new table.
-    TableCreate {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Comma-separated `name:TYPE` pairs, e.g. "id:INT,name:TEXT".
-        /// Supported types: INT, TEXT.
-        #[arg(long)]
-        columns: String,
-        /// Override the default row-group size for this table.
-        #[arg(long = "row-group-size")]
-        row_group_size: Option<u32>,
-    },
-
-    /// Insert a row into a table.
-    RowInsert {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Comma-separated values matching the table's columns, e.g. "1,Alice".
-        /// Use NULL (case-insensitive) for a NULL value.
-        #[arg(long)]
-        values: String,
-    },
-
-    /// Read a single row by its record id.
-    RowGet {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        /// Table name.
-        #[arg(long)]
-        table: String,
-        /// Record id returned by a prior insert.
-        #[arg(long)]
-        rid: u64,
-    },
-
     /// List all tables in the database.
     TableList {
         #[arg(long = "db", default_value = "./balik_db")]
@@ -118,14 +77,6 @@ pub enum Command {
 
     /// Drop a table and its on-disk files.
     TableDrop {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        #[arg(long)]
-        table: String,
-    },
-
-    /// Print every live row in a table, one per line.
-    TableScan {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
         #[arg(long)]
