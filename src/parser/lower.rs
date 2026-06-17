@@ -64,7 +64,9 @@ fn lower_drop_table(
         return Err(ParseError::unsupported("DROP TABLE IF EXISTS"));
     }
     let [name] = names.as_slice() else {
-        return Err(ParseError::unsupported("dropping more than one table at once"));
+        return Err(ParseError::unsupported(
+            "dropping more than one table at once",
+        ));
     };
     let table = single_name(name)?;
     Ok(DropTable { table })

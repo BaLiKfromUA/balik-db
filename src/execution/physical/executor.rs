@@ -156,9 +156,7 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         PhysicalPlan::CreateTableExec { .. }
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
-        | PhysicalPlan::ShowTablesExec => {
-            Err(Error::other("statement produces no row output"))
-        }
+        | PhysicalPlan::ShowTablesExec => Err(Error::other("statement produces no row output")),
     }
 }
 
