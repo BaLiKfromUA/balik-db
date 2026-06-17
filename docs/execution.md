@@ -50,8 +50,10 @@ lazy — `LimitExec` can stop early, and `TableScanExec` can skip row groups —
 without materializing the whole table. Two operators **block**: `SortExec` and
 `TopKExec` must see all of their input before they can emit anything.
 
-`CreateTableExec` and `InsertExec` are not part of the batch pipeline: they run
-for their effect against storage and report a `QueryResult::Affected` line.
+`CreateTableExec`, `InsertExec`, `DropTableExec`, and `ShowTablesExec` are not
+part of the batch pipeline: they run for their effect against storage at the
+root. The first three report a `QueryResult::Affected` line; `ShowTablesExec`
+builds its rows directly from the catalog.
 
 ## Operators
 
@@ -59,6 +61,8 @@ for their effect against storage and report a `QueryResult::Affected` line.
 |-------------------|-----------|---------------------------------------------------------|
 | `CreateTableExec` | root      | create a table in the catalog                           |
 | `InsertExec`      | root      | append one row                                          |
+| `DropTableExec`   | root      | remove a table from the catalog and delete its files    |
+| `ShowTablesExec`  | root      | list table names as a one-column result                 |
 | `TableScanExec`   | streaming | read column batches from storage, skipping row groups   |
 | `FilterExec`      | streaming | keep rows matching a WHERE predicate                    |
 | `ProjectionExec`  | streaming | select / reorder columns                                |
@@ -91,8 +95,9 @@ rows whose mask entry is `true`.
 
 A statement produces a `QueryResult`:
 
-- `Rows { names, rows }` for `SELECT`, rendered as a simple aligned text table.
-- `Affected(message)` for `CREATE TABLE` / `INSERT`.
+- `Rows { names, rows }` for `SELECT` and `SHOW TABLES`, rendered as a simple
+  aligned text table.
+- `Affected(message)` for `CREATE TABLE` / `INSERT` / `DROP TABLE`.
 
 The output column names are derived from the plan shape (a projection fixes them;
 the row-shaping operators below it defer to their input), so an empty result still

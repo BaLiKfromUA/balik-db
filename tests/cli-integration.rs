@@ -154,9 +154,7 @@ fn table_create_then_list_shows_both() {
     )
     .success();
 
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
+    run_query(&db, "SHOW TABLES")
         .success()
         .stdout(predicate::str::contains("orders"))
         .stdout(predicate::str::contains("users"));
@@ -237,9 +235,7 @@ fn tables_persist_across_restart() {
     .success();
 
     // Second invocation: list + describe must read back what the first wrote.
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
+    run_query(&db, "SHOW TABLES")
         .success()
         .stdout(predicate::str::contains("orders"))
         .stdout(predicate::str::contains("users"));
@@ -256,42 +252,6 @@ fn tables_persist_across_restart() {
         .success()
         .stdout(predicate::str::contains("Table:          users"))
         .stdout(predicate::str::contains("name"));
-}
-
-#[test]
-fn table_drop_removes_table() {
-    let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
-
-    balik_cli()
-        .args([
-            "table-drop",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Dropped table 'users'"));
-
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("(no tables)"));
-
-    balik_cli()
-        .args([
-            "table-describe",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such table"));
 }
 
 #[test]

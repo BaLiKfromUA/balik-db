@@ -27,7 +27,7 @@ returned AST always means "fully understood".
 ## Supported subset
 
 ```
-statement := create_table | insert | select
+statement := create_table | insert | select | drop_table | show_tables
 
 create_table := CREATE TABLE name '(' column_def (',' column_def)* ')'
 column_def   := name type [NULL | NOT NULL]    -- columns are nullable unless
@@ -37,6 +37,9 @@ type         := INT | TEXT                     -- INT also accepts INTEGER;
 
 insert       := INSERT INTO name VALUES '(' literal (',' literal)* ')'   -- single row
 literal      := integer | "'" string "'" | NULL
+
+drop_table   := DROP TABLE name                -- exactly one table; no IF EXISTS
+show_tables  := SHOW TABLES                     -- no filter/scope/limit clauses
 
 select       := SELECT projection FROM name [WHERE expr] [ORDER BY name [ASC|DESC]] [LIMIT integer]
 projection   := '*' | name (',' name)*
@@ -56,12 +59,15 @@ Notes:
 
 ## AST shape
 
-`Statement` is one of `CreateTable`, `Insert`, `Select` (see `src/parser/ast.rs`):
+`Statement` is one of `CreateTable`, `Insert`, `Select`, `DropTable`,
+`ShowTables` (see `src/parser/ast.rs`):
 
 - `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType, nullable: bool }> }`,
   `DataType` ∈ `{ Int, Text }`. `nullable` defaults to `true` and is set to
   `false` by `NOT NULL`.
 - `Insert { table, values: Vec<Literal> }`, `Literal` ∈ `{ Int(i64), Text(String), Null }`.
+- `DropTable { table }`.
+- `ShowTables` (no fields).
 - `Select { projections, from, filter, order_by, limit }` where `projections`
   is `All` or `Columns(Vec<String>)`, `filter` is an optional `Expr`, `order_by`
   is an optional `OrderBy { column, descending }`, and `limit` an optional `u64`.
@@ -85,7 +91,9 @@ It also does not support (and rejects as `unsupported`): `JOIN`, `GROUP BY`, `HA
 `DISTINCT`, subqueries, `WITH`, `UNION`/set operations, multiple `FROM` tables,
 qualified names (`schema.table`, `table.column`), functions, multi-row or
 column-list `INSERT`, `OFFSET`, column options other than `NULL`/`NOT NULL`
-(`DEFAULT`, `PRIMARY KEY`, ...), table constraints, and other complex SQL.
+(`DEFAULT`, `PRIMARY KEY`, ...), table constraints, `DROP TABLE IF EXISTS` or
+multi-table drops, `SHOW TABLES` with a `LIKE`/scope/limit clause, and other
+complex SQL.
 
 ## Running it
 

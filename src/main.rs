@@ -33,14 +33,8 @@ fn main() -> ExitCode {
         } => cli::commands::explain::run(&path, &sql, optimize),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
-        cli::Command::TableList { path } => {
-            cli::commands::table_list::run(&path).map_err(Into::into)
-        }
         cli::Command::TableDescribe { path, table } => {
             cli::commands::table_describe::run(&path, &table).map_err(Into::into)
-        }
-        cli::Command::TableDrop { path, table } => {
-            cli::commands::table_drop::run(&path, &table).map_err(Into::into)
         }
         cli::Command::RowDelete { path, table, rid } => {
             cli::commands::row_delete::run(&path, &table, rid).map_err(Into::into)

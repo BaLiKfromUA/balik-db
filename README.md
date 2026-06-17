@@ -47,9 +47,13 @@ Created table 'orders' (id=1)
 
 4. List tables
 
-```bash
-./balik-cli table-list
+Tables are listed with SQL through the `query` command:
 
+```bash
+./balik-cli query --sql "SHOW TABLES"
+
+table_name
+----------
 orders
 ```
 
@@ -139,10 +143,12 @@ Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
 
 10. Drop a table
 
-```bash
-./balik-cli table-drop --table orders
+Tables are dropped with SQL through the `query` command:
 
-Dropped table 'orders' from './balik_db'
+```bash
+./balik-cli query --sql "DROP TABLE orders"
+
+Dropped table 'orders'
 ```
 
 11. Run basic validation
@@ -311,9 +317,7 @@ src/
       query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-      table_list.rs    // list table names
       table_describe.rs// print a table's schema and storage info
-      table_drop.rs    // remove a table
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation
