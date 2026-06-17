@@ -24,11 +24,30 @@ pub fn lower_statement(stmt: sql::Statement) -> Result<Statement> {
             names,
             ..
         } => lower_drop_table(object_type, if_exists, names).map(Statement::DropTable),
+        sql::Statement::ShowTables { show_options, .. } => lower_show_tables(show_options),
         other => Err(ParseError::unsupported(format!(
-            "only CREATE TABLE, INSERT, SELECT and DROP TABLE are supported, not `{}`",
+            "only CREATE TABLE, INSERT, SELECT, DROP TABLE and SHOW TABLES are supported, not `{}`",
             statement_keyword(&other)
         ))),
     }
+}
+
+// ---- SHOW TABLES -----------------------------------------------------------
+
+fn lower_show_tables(opts: sql::ShowStatementOptions) -> Result<Statement> {
+    // The supported form is a bare `SHOW TABLES`; any scope, filter, or limit
+    // clause is outside the subset.
+    if opts.show_in.is_some()
+        || opts.starts_with.is_some()
+        || opts.limit.is_some()
+        || opts.limit_from.is_some()
+        || opts.filter_position.is_some()
+    {
+        return Err(ParseError::unsupported(
+            "SHOW TABLES with a filter, scope, or limit clause",
+        ));
+    }
+    Ok(Statement::ShowTables)
 }
 
 // ---- DROP TABLE ------------------------------------------------------------

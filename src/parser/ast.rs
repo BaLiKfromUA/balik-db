@@ -19,6 +19,8 @@ pub enum Statement {
     Insert(Insert),
     Select(Select),
     DropTable(DropTable),
+    /// `SHOW TABLES` — list the names of every table.
+    ShowTables,
 }
 
 /// `CREATE TABLE name (col TYPE, ...)`.

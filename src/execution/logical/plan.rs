@@ -47,6 +47,7 @@ pub enum LogicalPlan {
     DropTable {
         table: String,
     },
+    ShowTables,
     Scan {
         table: String,
         /// Columns the scan must produce. `None` means all of the table's
@@ -113,6 +114,7 @@ impl LogicalPlan {
                 write!(f, "{pad}Insert {table} [{vals}]")
             }
             LogicalPlan::DropTable { table } => write!(f, "{pad}DropTable {table}"),
+            LogicalPlan::ShowTables => write!(f, "{pad}ShowTables"),
             LogicalPlan::Scan { table, columns } => match columns {
                 Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
                 None => write!(f, "{pad}Scan {table}"),

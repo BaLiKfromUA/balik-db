@@ -65,7 +65,8 @@ fn collect_required_columns(
         LogicalPlan::Limit { input, .. } => collect_required_columns(input, projected, extra),
         LogicalPlan::CreateTable { .. }
         | LogicalPlan::Insert { .. }
-        | LogicalPlan::DropTable { .. } => false,
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::ShowTables => false,
     }
 }
 
@@ -116,7 +117,8 @@ fn set_scan_columns(plan: LogicalPlan, columns: Vec<String>) -> LogicalPlan {
         // dropped recursion that leaves the scan un-pruned.
         dml @ (LogicalPlan::CreateTable { .. }
         | LogicalPlan::Insert { .. }
-        | LogicalPlan::DropTable { .. }) => dml,
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::ShowTables) => dml,
     }
 }
 

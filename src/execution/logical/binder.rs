@@ -24,6 +24,7 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::Insert(ins) => bind_insert(ins, storage),
         Statement::Select(sel) => bind_select(sel, storage),
         Statement::DropTable(dt) => bind_drop_table(dt, storage),
+        Statement::ShowTables => Ok(LogicalPlan::ShowTables),
     }
 }
 
@@ -288,6 +289,13 @@ mod tests {
         let (_tmp, store) = seeded_store();
         let err = plan_of("DROP TABLE ghosts", &store).unwrap_err();
         assert!(err.to_string().contains("no such table"), "{err}");
+    }
+
+    #[test]
+    fn show_tables_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("SHOW TABLES", &store).unwrap();
+        assert_eq!(plan.to_string(), "ShowTables");
     }
 
     #[test]

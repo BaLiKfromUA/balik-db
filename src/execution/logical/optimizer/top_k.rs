@@ -61,7 +61,8 @@ pub(super) fn apply(plan: LogicalPlan) -> LogicalPlan {
         leaf @ (LogicalPlan::Scan { .. }
         | LogicalPlan::CreateTable { .. }
         | LogicalPlan::Insert { .. }
-        | LogicalPlan::DropTable { .. }) => leaf,
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::ShowTables) => leaf,
     }
 }
 

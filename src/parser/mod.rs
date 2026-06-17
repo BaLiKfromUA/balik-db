@@ -361,6 +361,20 @@ mod tests {
         assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
+    // ---- SHOW TABLES ----
+
+    #[test]
+    fn show_tables_basic() {
+        let stmt = parse("SHOW TABLES").unwrap();
+        assert_eq!(stmt, Statement::ShowTables);
+    }
+
+    #[test]
+    fn show_tables_with_filter_is_rejected() {
+        let err = parse("SHOW TABLES LIKE 'u%'").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]

@@ -690,6 +690,38 @@ fn query_drop_unknown_table_fails() {
         .stderr(predicate::str::contains("no such table"));
 }
 
+#[test]
+fn query_show_tables_on_empty_db_prints_header_only() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "SHOW TABLES")
+        .success()
+        .stdout("table_name\n----------\n");
+}
+
+#[test]
+fn query_show_tables_lists_names_in_order() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
+    run_query(&db, "CREATE TABLE orders (id INT NOT NULL)").success();
+    run_query(&db, "CREATE TABLE audit (id INT NOT NULL)").success();
+
+    // A fresh process reopens the database, so this also proves the catalog
+    // persisted. Names come back in deterministic (alphabetical) order.
+    let assert = run_query(&db, "SHOW TABLES")
+        .success()
+        .stdout(predicate::str::contains("table_name"))
+        .stdout(predicate::str::contains("audit"))
+        .stdout(predicate::str::contains("orders"))
+        .stdout(predicate::str::contains("users"));
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.find("audit") < stdout.find("orders")
+            && stdout.find("orders") < stdout.find("users"),
+        "tables not in sorted order:\n{stdout}"
+    );
+}
+
 fn explain(db: &std::path::Path, sql: &str, optimize: bool) -> assert_cmd::assert::Assert {
     let mut cmd = balik_cli();
     cmd.args(["explain", "--db", db.to_str().unwrap(), "--sql", sql]);
@@ -751,6 +783,15 @@ fn explain_drop_unknown_table_fails() {
     explain(&db, "DROP TABLE ghosts", false)
         .failure()
         .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn explain_show_tables_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "SHOW TABLES", false)
+        .success()
+        .stdout(predicate::str::contains("ShowTables"))
+        .stdout(predicate::str::contains("ShowTablesExec"));
 }
 
 #[test]
