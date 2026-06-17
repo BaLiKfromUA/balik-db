@@ -36,6 +36,9 @@ fn lower_node(plan: &LogicalPlan, prune: &[ScanPredicate]) -> PhysicalPlan {
             table: table.clone(),
             values: values.clone(),
         },
+        LogicalPlan::DropTable { table } => PhysicalPlan::DropTableExec {
+            table: table.clone(),
+        },
         LogicalPlan::Scan { table, columns } => PhysicalPlan::TableScanExec {
             table: table.clone(),
             projection: columns.clone(),
@@ -152,5 +155,11 @@ mod tests {
     fn insert_lowers_to_insert_exec() {
         let physical = lowered("INSERT INTO users VALUES (1, 'Alice', 20)", false);
         assert_eq!(physical, "InsertExec users [1, 'Alice', 20]");
+    }
+
+    #[test]
+    fn drop_table_lowers_to_drop_table_exec() {
+        let physical = lowered("DROP TABLE users", false);
+        assert_eq!(physical, "DropTableExec users");
     }
 }

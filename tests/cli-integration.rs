@@ -665,6 +665,31 @@ fn query_order_by_column_not_in_select_list() {
         .stdout("id\n--\n2 \n3 \n");
 }
 
+#[test]
+fn query_drop_table_removes_table() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
+    run_query(&db, "INSERT INTO users VALUES (1)").success();
+
+    run_query(&db, "DROP TABLE users")
+        .success()
+        .stdout(predicate::str::contains("Dropped table 'users'"));
+
+    // A fresh process reopens the database, so the table staying gone proves the
+    // drop persisted across restart.
+    run_query(&db, "SELECT * FROM users")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn query_drop_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "DROP TABLE ghosts")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
 fn explain(db: &std::path::Path, sql: &str, optimize: bool) -> assert_cmd::assert::Assert {
     let mut cmd = balik_cli();
     cmd.args(["explain", "--db", db.to_str().unwrap(), "--sql", sql]);
@@ -709,6 +734,23 @@ fn explain_without_optimize_keeps_sort_and_limit_separate() {
         .stdout(predicate::str::contains("SortExec [id]"))
         .stdout(predicate::str::contains("LimitExec 5"))
         .stdout(predicate::str::contains("TopK").not());
+}
+
+#[test]
+fn explain_drop_table_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "DROP TABLE users", false)
+        .success()
+        .stdout(predicate::str::contains("DropTable users"))
+        .stdout(predicate::str::contains("DropTableExec users"));
+}
+
+#[test]
+fn explain_drop_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    explain(&db, "DROP TABLE ghosts", false)
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
 }
 
 #[test]

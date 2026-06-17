@@ -18,6 +18,7 @@ pub enum Statement {
     CreateTable(CreateTable),
     Insert(Insert),
     Select(Select),
+    DropTable(DropTable),
 }
 
 /// `CREATE TABLE name (col TYPE, ...)`.
@@ -25,6 +26,12 @@ pub enum Statement {
 pub struct CreateTable {
     pub table: String,
     pub columns: Vec<ColumnDef>,
+}
+
+/// `DROP TABLE name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropTable {
+    pub table: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

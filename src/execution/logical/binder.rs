@@ -23,7 +23,17 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::CreateTable(ct) => bind_create_table(ct),
         Statement::Insert(ins) => bind_insert(ins, storage),
         Statement::Select(sel) => bind_select(sel, storage),
+        Statement::DropTable(dt) => bind_drop_table(dt, storage),
     }
+}
+
+fn bind_drop_table(dt: &ast::DropTable, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
+    // Fail early on an unknown table so the error surfaces at plan time (and in
+    // `explain`) rather than mid-execution.
+    storage.describe_table(&dt.table)?;
+    Ok(LogicalPlan::DropTable {
+        table: dt.table.clone(),
+    })
 }
 
 fn bind_create_table(ct: &ast::CreateTable) -> Result<LogicalPlan, Error> {
@@ -264,6 +274,20 @@ mod tests {
         let (_tmp, store) = seeded_store();
         let err = plan_of("INSERT INTO users VALUES ('x', 'Alice', 20)", &store).unwrap_err();
         assert!(err.to_string().contains("expects INT, got TEXT"), "{err}");
+    }
+
+    #[test]
+    fn drop_table_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("DROP TABLE users", &store).unwrap();
+        assert_eq!(plan.to_string(), "DropTable users");
+    }
+
+    #[test]
+    fn drop_table_rejects_unknown_table() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("DROP TABLE ghosts", &store).unwrap_err();
+        assert!(err.to_string().contains("no such table"), "{err}");
     }
 
     #[test]

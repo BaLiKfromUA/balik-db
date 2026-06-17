@@ -18,11 +18,37 @@ pub fn lower_statement(stmt: sql::Statement) -> Result<Statement> {
         sql::Statement::CreateTable(ct) => lower_create_table(ct).map(Statement::CreateTable),
         sql::Statement::Insert(ins) => lower_insert(ins).map(Statement::Insert),
         sql::Statement::Query(query) => lower_select(*query).map(Statement::Select),
+        sql::Statement::Drop {
+            object_type,
+            if_exists,
+            names,
+            ..
+        } => lower_drop_table(object_type, if_exists, names).map(Statement::DropTable),
         other => Err(ParseError::unsupported(format!(
-            "only CREATE TABLE, INSERT and SELECT are supported, not `{}`",
+            "only CREATE TABLE, INSERT, SELECT and DROP TABLE are supported, not `{}`",
             statement_keyword(&other)
         ))),
     }
+}
+
+// ---- DROP TABLE ------------------------------------------------------------
+
+fn lower_drop_table(
+    object_type: sql::ObjectType,
+    if_exists: bool,
+    names: Vec<sql::ObjectName>,
+) -> Result<DropTable> {
+    if object_type != sql::ObjectType::Table {
+        return Err(ParseError::unsupported("DROP of anything but a TABLE"));
+    }
+    if if_exists {
+        return Err(ParseError::unsupported("DROP TABLE IF EXISTS"));
+    }
+    let [name] = names.as_slice() else {
+        return Err(ParseError::unsupported("dropping more than one table at once"));
+    };
+    let table = single_name(name)?;
+    Ok(DropTable { table })
 }
 
 // ---- CREATE TABLE ----------------------------------------------------------
