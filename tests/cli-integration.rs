@@ -154,9 +154,7 @@ fn table_create_then_list_shows_both() {
     )
     .success();
 
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
+    run_query(&db, "SHOW TABLES")
         .success()
         .stdout(predicate::str::contains("orders"))
         .stdout(predicate::str::contains("users"));
@@ -237,9 +235,7 @@ fn tables_persist_across_restart() {
     .success();
 
     // Second invocation: list + describe must read back what the first wrote.
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
+    run_query(&db, "SHOW TABLES")
         .success()
         .stdout(predicate::str::contains("orders"))
         .stdout(predicate::str::contains("users"));
@@ -256,42 +252,6 @@ fn tables_persist_across_restart() {
         .success()
         .stdout(predicate::str::contains("Table:          users"))
         .stdout(predicate::str::contains("name"));
-}
-
-#[test]
-fn table_drop_removes_table() {
-    let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
-
-    balik_cli()
-        .args([
-            "table-drop",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Dropped table 'users'"));
-
-    balik_cli()
-        .args(["table-list", "--db", db.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("(no tables)"));
-
-    balik_cli()
-        .args([
-            "table-describe",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such table"));
 }
 
 #[test]
@@ -665,6 +625,63 @@ fn query_order_by_column_not_in_select_list() {
         .stdout("id\n--\n2 \n3 \n");
 }
 
+#[test]
+fn query_drop_table_removes_table() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
+    run_query(&db, "INSERT INTO users VALUES (1)").success();
+
+    run_query(&db, "DROP TABLE users")
+        .success()
+        .stdout(predicate::str::contains("Dropped table 'users'"));
+
+    // A fresh process reopens the database, so the table staying gone proves the
+    // drop persisted across restart.
+    run_query(&db, "SELECT * FROM users")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn query_drop_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "DROP TABLE ghosts")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn query_show_tables_on_empty_db_prints_header_only() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "SHOW TABLES")
+        .success()
+        .stdout("table_name\n----------\n");
+}
+
+#[test]
+fn query_show_tables_lists_names_in_order() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL)").success();
+    run_query(&db, "CREATE TABLE orders (id INT NOT NULL)").success();
+    run_query(&db, "CREATE TABLE audit (id INT NOT NULL)").success();
+
+    // A fresh process reopens the database, so this also proves the catalog
+    // persisted. Names come back in deterministic (alphabetical) order.
+    let assert = run_query(&db, "SHOW TABLES")
+        .success()
+        .stdout(predicate::str::contains("table_name"))
+        .stdout(predicate::str::contains("audit"))
+        .stdout(predicate::str::contains("orders"))
+        .stdout(predicate::str::contains("users"));
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.find("audit") < stdout.find("orders")
+            && stdout.find("orders") < stdout.find("users"),
+        "tables not in sorted order:\n{stdout}"
+    );
+}
+
 fn explain(db: &std::path::Path, sql: &str, optimize: bool) -> assert_cmd::assert::Assert {
     let mut cmd = balik_cli();
     cmd.args(["explain", "--db", db.to_str().unwrap(), "--sql", sql]);
@@ -709,6 +726,32 @@ fn explain_without_optimize_keeps_sort_and_limit_separate() {
         .stdout(predicate::str::contains("SortExec [id]"))
         .stdout(predicate::str::contains("LimitExec 5"))
         .stdout(predicate::str::contains("TopK").not());
+}
+
+#[test]
+fn explain_drop_table_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "DROP TABLE users", false)
+        .success()
+        .stdout(predicate::str::contains("DropTable users"))
+        .stdout(predicate::str::contains("DropTableExec users"));
+}
+
+#[test]
+fn explain_drop_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    explain(&db, "DROP TABLE ghosts", false)
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn explain_show_tables_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "SHOW TABLES", false)
+        .success()
+        .stdout(predicate::str::contains("ShowTables"))
+        .stdout(predicate::str::contains("ShowTablesExec"));
 }
 
 #[test]

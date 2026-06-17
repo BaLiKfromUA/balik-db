@@ -33,6 +33,8 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
             exec_create_table(table, columns, store)
         }
         PhysicalPlan::InsertExec { table, values } => exec_insert(table, values, store),
+        PhysicalPlan::DropTableExec { table } => exec_drop_table(table, store),
+        PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -120,9 +122,12 @@ pub(super) fn execute_stream<'a>(
                 None => Ok(Box::new(std::iter::empty())),
             }
         }
-        PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => Err(
-            Error::other("DDL/DML operator cannot appear inside a query pipeline"),
-        ),
+        PhysicalPlan::CreateTableExec { .. }
+        | PhysicalPlan::InsertExec { .. }
+        | PhysicalPlan::DropTableExec { .. }
+        | PhysicalPlan::ShowTablesExec => Err(Error::other(
+            "DDL/DML operator cannot appear inside a query pipeline",
+        )),
     }
 }
 
@@ -148,9 +153,10 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         } => Err(Error::other(format!(
             "scan of '{table}' has no resolved output columns"
         ))),
-        PhysicalPlan::CreateTableExec { .. } | PhysicalPlan::InsertExec { .. } => {
-            Err(Error::other("statement produces no row output"))
-        }
+        PhysicalPlan::CreateTableExec { .. }
+        | PhysicalPlan::InsertExec { .. }
+        | PhysicalPlan::DropTableExec { .. }
+        | PhysicalPlan::ShowTablesExec => Err(Error::other("statement produces no row output")),
     }
 }
 
@@ -202,6 +208,27 @@ fn exec_insert(
         "Inserted into '{table}' as rid {}",
         rid.0
     )))
+}
+
+/// Run a DROP TABLE: remove the table from the catalog and delete its on-disk
+/// files. The binder has already checked the table exists.
+fn exec_drop_table(table: &str, store: &mut dyn Storage) -> Result<QueryResult, Error> {
+    store.drop_table(table)?;
+    Ok(QueryResult::Affected(format!("Dropped table '{table}'")))
+}
+
+/// Run a SHOW TABLES: list the catalog's table names, one row each. Storage
+/// returns them in a deterministic (alphabetical) order, so the output is stable.
+fn exec_show_tables(store: &dyn Storage) -> Result<QueryResult, Error> {
+    let rows = store
+        .list_tables()?
+        .into_iter()
+        .map(|name| vec![Value::Text(name)])
+        .collect();
+    Ok(QueryResult::Rows {
+        names: vec!["table_name".to_string()],
+        rows,
+    })
 }
 
 fn literal_to_value(lit: &Literal) -> Value {
@@ -549,6 +576,74 @@ mod tests {
             }],
         };
         assert!(execute(&plan, &mut store).is_err());
+    }
+
+    #[test]
+    fn drop_table_exec_removes_table_from_catalog() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        assert!(store.list_tables().unwrap().contains(&"users".to_string()));
+
+        let plan = PhysicalPlan::DropTableExec {
+            table: "users".into(),
+        };
+        let result = execute(&plan, &mut store).unwrap();
+        assert!(matches!(result, QueryResult::Affected(_)));
+
+        assert!(!store.list_tables().unwrap().contains(&"users".to_string()));
+        assert!(store.describe_table("users").is_err());
+    }
+
+    #[test]
+    fn drop_table_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::DropTableExec {
+            table: "ghosts".into(),
+        };
+        assert!(execute(&plan, &mut store).is_err());
+    }
+
+    #[test]
+    fn show_tables_exec_lists_names_in_order() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let schema = Schema {
+            columns: vec![Column {
+                name: "id".into(),
+                ty: ColumnType::Int,
+                nullable: false,
+            }],
+        };
+        store
+            .create_table("orders", schema, TableOptions::default())
+            .unwrap();
+
+        let result = execute(&PhysicalPlan::ShowTablesExec, &mut store).unwrap();
+        assert_eq!(
+            result,
+            QueryResult::Rows {
+                names: vec!["table_name".into()],
+                rows: vec![
+                    vec![Value::Text("orders".into())],
+                    vec![Value::Text("users".into())],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn show_tables_exec_on_empty_catalog_returns_no_rows() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("db");
+        metadata::initialize(&db).unwrap();
+        let mut store = ColumnStore::open(&db).unwrap();
+
+        let result = execute(&PhysicalPlan::ShowTablesExec, &mut store).unwrap();
+        assert_eq!(
+            result,
+            QueryResult::Rows {
+                names: vec!["table_name".into()],
+                rows: vec![],
+            }
+        );
     }
 
     fn insert(table: &str, values: Vec<Literal>) -> PhysicalPlan {

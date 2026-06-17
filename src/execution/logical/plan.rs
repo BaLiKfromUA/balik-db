@@ -44,6 +44,10 @@ pub enum LogicalPlan {
         table: String,
         values: Vec<Literal>,
     },
+    DropTable {
+        table: String,
+    },
+    ShowTables,
     Scan {
         table: String,
         /// Columns the scan must produce. `None` means all of the table's
@@ -109,6 +113,8 @@ impl LogicalPlan {
                     .join(", ");
                 write!(f, "{pad}Insert {table} [{vals}]")
             }
+            LogicalPlan::DropTable { table } => write!(f, "{pad}DropTable {table}"),
+            LogicalPlan::ShowTables => write!(f, "{pad}ShowTables"),
             LogicalPlan::Scan { table, columns } => match columns {
                 Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
                 None => write!(f, "{pad}Scan {table}"),

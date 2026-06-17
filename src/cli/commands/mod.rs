@@ -6,5 +6,3 @@ pub mod query;
 pub mod row_delete;
 pub mod row_update;
 pub mod table_describe;
-pub mod table_drop;
-pub mod table_list;

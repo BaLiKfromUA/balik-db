@@ -332,6 +332,49 @@ mod tests {
         assert!(err.to_string().contains("near `people`"), "{err}");
     }
 
+    // ---- DROP TABLE ----
+
+    #[test]
+    fn drop_table_basic() {
+        let stmt = parse("DROP TABLE users").unwrap();
+        let Statement::DropTable(dt) = stmt else {
+            panic!("expected DropTable, got {stmt:?}");
+        };
+        assert_eq!(dt.table, "users");
+    }
+
+    #[test]
+    fn drop_table_if_exists_is_rejected() {
+        let err = parse("DROP TABLE IF EXISTS users").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn drop_multiple_tables_is_rejected() {
+        let err = parse("DROP TABLE a, b").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn drop_non_table_is_rejected() {
+        let err = parse("DROP VIEW v").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
+    // ---- SHOW TABLES ----
+
+    #[test]
+    fn show_tables_basic() {
+        let stmt = parse("SHOW TABLES").unwrap();
+        assert_eq!(stmt, Statement::ShowTables);
+    }
+
+    #[test]
+    fn show_tables_with_filter_is_rejected() {
+        let err = parse("SHOW TABLES LIKE 'u%'").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]

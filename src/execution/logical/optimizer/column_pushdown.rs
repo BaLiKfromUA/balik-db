@@ -63,7 +63,10 @@ fn collect_required_columns(
             collect_required_columns(input, projected, extra)
         }
         LogicalPlan::Limit { input, .. } => collect_required_columns(input, projected, extra),
-        LogicalPlan::CreateTable { .. } | LogicalPlan::Insert { .. } => false,
+        LogicalPlan::CreateTable { .. }
+        | LogicalPlan::Insert { .. }
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::ShowTables => false,
     }
 }
 
@@ -112,7 +115,10 @@ fn set_scan_columns(plan: LogicalPlan, columns: Vec<String>) -> LogicalPlan {
         // No scan to stamp; these are standalone roots. Listed explicitly so a
         // new operator above a `Scan` is a compile error here, not a silently
         // dropped recursion that leaves the scan un-pruned.
-        dml @ (LogicalPlan::CreateTable { .. } | LogicalPlan::Insert { .. }) => dml,
+        dml @ (LogicalPlan::CreateTable { .. }
+        | LogicalPlan::Insert { .. }
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::ShowTables) => dml,
     }
 }
 

@@ -61,22 +61,8 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// List all tables in the database.
-    TableList {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-    },
-
     /// Print the schema and layout info for one table.
     TableDescribe {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        #[arg(long)]
-        table: String,
-    },
-
-    /// Drop a table and its on-disk files.
-    TableDrop {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
         #[arg(long)]

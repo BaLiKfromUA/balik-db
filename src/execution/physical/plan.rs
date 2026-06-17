@@ -40,6 +40,10 @@ pub enum PhysicalPlan {
         table: String,
         values: Vec<Literal>,
     },
+    DropTableExec {
+        table: String,
+    },
+    ShowTablesExec,
     TableScanExec {
         table: String,
         /// Columns to decode from storage, in output order. `None` means every
@@ -108,6 +112,8 @@ impl PhysicalPlan {
                     .join(", ");
                 write!(f, "{pad}InsertExec {table} [{vals}]")
             }
+            PhysicalPlan::DropTableExec { table } => write!(f, "{pad}DropTableExec {table}"),
+            PhysicalPlan::ShowTablesExec => write!(f, "{pad}ShowTablesExec"),
             PhysicalPlan::TableScanExec {
                 table,
                 projection,

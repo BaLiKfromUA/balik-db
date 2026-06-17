@@ -38,6 +38,8 @@ mismatches surface as `InvalidQuery`; an ill-formed CREATE TABLE surfaces as
 |---------------|----------------------------------------------------|
 | `CreateTable` | define a table (standalone root)                   |
 | `Insert`      | add a row (standalone root)                         |
+| `DropTable`   | remove a table (standalone root)                   |
+| `ShowTables`  | list table names (standalone root)                 |
 | `Scan`        | read a table — always the leaf of a SELECT tree    |
 | `Filter`      | keep rows matching a WHERE predicate               |
 | `Projection`  | choose / order output columns                      |
@@ -88,6 +90,8 @@ does not.
   value's type matches its column, and `NULL` lands only on a nullable column.
 - **SELECT** — the table exists; every column named in the projection, `WHERE`,
   and `ORDER BY` exists in the table.
+- **DROP TABLE** — the table exists.
+- **SHOW TABLES** — nothing to validate.
 
 ## CLI
 
