@@ -135,12 +135,15 @@ id | total
 1  | 150
 ```
 
-9. Delete a row
+9. Delete rows
+
+Rows are deleted with SQL through the `query` command. A `WHERE` clause removes
+only matching rows; omitting it removes every row in the table.
 
 ```bash
-./balik-cli row-delete --table orders --rid 1
+./balik-cli query --sql "DELETE FROM orders WHERE id = 2"
 
-rid 1: deleted
+Deleted 1 row(s) from 'orders'
 
 ./balik-cli query --sql "SELECT * FROM orders"
 
@@ -148,8 +151,6 @@ id | total
 ---+------
 1  | 150
 ```
-
-Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
 
 10. Drop a table
 
@@ -328,7 +329,6 @@ src/
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
-      row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
     column_store.rs    // column-store implementation: insert / get / scan / update / delete

@@ -419,7 +419,7 @@ fn table_scan_on_empty_table_reports_no_rows() {
 }
 
 #[test]
-fn row_delete_hides_row_from_get_and_scan_across_restart() {
+fn delete_where_removes_matching_row_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
@@ -436,11 +436,9 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         run_query(db, sql).success();
     }
 
-    balik_cli()
-        .args(["row-delete", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+    run_query(db, "DELETE FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("rid 1: deleted"));
+        .stdout(predicate::str::contains("Deleted 1 row(s) from 'users'"));
 
     // Fresh process → the tombstoned row (bob, id 2) no longer matches a lookup.
     run_query(db, "SELECT * FROM users WHERE id = 2")
@@ -453,6 +451,30 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         .stdout(predicate::str::contains("1  | alice"))
         .stdout(predicate::str::contains("3  | carol"))
         .stdout(predicate::str::contains("bob").not());
+}
+
+#[test]
+fn delete_without_where_removes_all_rows_across_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
+    for sql in [
+        "INSERT INTO users VALUES (1)",
+        "INSERT INTO users VALUES (2)",
+        "INSERT INTO users VALUES (3)",
+    ] {
+        run_query(db, sql).success();
+    }
+
+    run_query(db, "DELETE FROM users")
+        .success()
+        .stdout(predicate::str::contains("Deleted 3 row(s) from 'users'"));
+
+    // Fresh process → the table is empty but still present (header only).
+    run_query(db, "SELECT id FROM users")
+        .success()
+        .stdout("id\n--\n");
 }
 
 #[test]
@@ -526,15 +548,27 @@ fn row_update_unknown_rid_fails() {
 }
 
 #[test]
-fn row_delete_unknown_rid_fails() {
+fn delete_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    run_query(db, "DELETE FROM ghosts WHERE id = 0")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn delete_matching_no_rows_reports_zero() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
     run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
-    balik_cli()
-        .args(["row-delete", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such record"));
+    run_query(db, "INSERT INTO users VALUES (1)").success();
+    // A predicate that matches nothing is a no-op, not an error.
+    run_query(db, "DELETE FROM users WHERE id = 99")
+        .success()
+        .stdout(predicate::str::contains("Deleted 0 row(s) from 'users'"));
+    run_query(db, "SELECT id FROM users")
+        .success()
+        .stdout(predicate::str::contains("1"));
 }
 
 /// Initialize a db with a `users(id INT, name TEXT, age INT)` table.
@@ -746,6 +780,15 @@ fn explain_drop_table_shows_logical_and_physical_plans() {
         .success()
         .stdout(predicate::str::contains("DropTable users"))
         .stdout(predicate::str::contains("DropTableExec users"));
+}
+
+#[test]
+fn explain_delete_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "DELETE FROM users WHERE age > 18", false)
+        .success()
+        .stdout(predicate::str::contains("Delete users [age > 18]"))
+        .stdout(predicate::str::contains("DeleteExec users [age > 18]"));
 }
 
 #[test]

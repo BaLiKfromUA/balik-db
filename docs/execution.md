@@ -50,9 +50,10 @@ lazy — `LimitExec` can stop early, and `TableScanExec` can skip row groups —
 without materializing the whole table. Two operators **block**: `SortExec` and
 `TopKExec` must see all of their input before they can emit anything.
 
-`CreateTableExec`, `InsertExec`, `DropTableExec`, `ShowTablesExec`, and
-`DescribeExec` are not part of the batch pipeline: they run for their effect
-against storage at the root. The first three report a `QueryResult::Affected`
+`CreateTableExec`, `InsertExec`, `DeleteExec`, `DropTableExec`,
+`ShowTablesExec`, and `DescribeExec` are not part of the batch pipeline: they
+run for their effect against storage at the root. `CreateTableExec`,
+`InsertExec`, `DeleteExec`, and `DropTableExec` report a `QueryResult::Affected`
 line; `ShowTablesExec` and `DescribeExec` build their rows directly from the
 catalog.
 
@@ -62,6 +63,7 @@ catalog.
 |-------------------|-----------|---------------------------------------------------------|
 | `CreateTableExec` | root      | create a table in the catalog                           |
 | `InsertExec`      | root      | append one row                                          |
+| `DeleteExec`      | root      | tombstone matching rows (or all rows) by record id      |
 | `DropTableExec`   | root      | remove a table from the catalog and delete its files    |
 | `ShowTablesExec`  | root      | list table names as a one-column result                 |
 | `DescribeExec`    | root      | list a table's columns (+ storage metadata if EXTENDED) |

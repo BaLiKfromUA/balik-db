@@ -27,7 +27,7 @@ returned AST always means "fully understood".
 ## Supported subset
 
 ```
-statement := create_table | insert | select | drop_table | show_tables | describe
+statement := create_table | insert | select | delete | drop_table | show_tables | describe
 
 create_table := CREATE TABLE name '(' column_def (',' column_def)* ')'
 column_def   := name type [NULL | NOT NULL]    -- columns are nullable unless
@@ -37,6 +37,8 @@ type         := INT | TEXT                     -- INT also accepts INTEGER;
 
 insert       := INSERT INTO name VALUES '(' literal (',' literal)* ')'   -- single row
 literal      := integer | "'" string "'" | NULL
+
+delete       := DELETE FROM name [WHERE expr]  -- omitting WHERE removes every row
 
 drop_table   := DROP TABLE name                -- exactly one table; no IF EXISTS
 show_tables  := SHOW TABLES                     -- no filter/scope/limit clauses
@@ -62,13 +64,15 @@ Notes:
 
 ## AST shape
 
-`Statement` is one of `CreateTable`, `Insert`, `Select`, `DropTable`,
+`Statement` is one of `CreateTable`, `Insert`, `Select`, `Delete`, `DropTable`,
 `ShowTables`, `Describe` (see `src/parser/ast.rs`):
 
 - `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType, nullable: bool }> }`,
   `DataType` ∈ `{ Int, Text }`. `nullable` defaults to `true` and is set to
   `false` by `NOT NULL`.
 - `Insert { table, values: Vec<Literal> }`, `Literal` ∈ `{ Int(i64), Text(String), Null }`.
+- `Delete { table, filter }`, where `filter` is an optional `Expr` (no `WHERE`
+  means delete every row).
 - `DropTable { table }`.
 - `ShowTables` (no fields).
 - `Describe { table, extended }`, where `extended` (set by `EXTENDED` /

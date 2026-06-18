@@ -61,17 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Delete a single row by its record id.
-    RowDelete {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        #[arg(long)]
-        table: String,
-        /// Record id returned by a prior insert.
-        #[arg(long)]
-        rid: u64,
-    },
-
     /// Update a single row by its record id. Prints the new rid since
     /// updates are modeled as delete + insert.
     RowUpdate {
