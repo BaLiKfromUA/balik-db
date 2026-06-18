@@ -25,8 +25,18 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::Select(sel) => bind_select(sel, storage),
         Statement::DropTable(dt) => bind_drop_table(dt, storage),
         Statement::ShowTables => Ok(LogicalPlan::ShowTables),
-        Statement::Describe(_) => Err(Error::other("DESCRIBE not yet implemented")),
+        Statement::Describe(d) => bind_describe(d, storage),
     }
+}
+
+fn bind_describe(d: &ast::Describe, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
+    // Fail early on an unknown table so the error surfaces at plan time (and in
+    // `explain`) rather than mid-execution.
+    storage.describe_table(&d.table)?;
+    Ok(LogicalPlan::Describe {
+        table: d.table.clone(),
+        extended: d.extended,
+    })
 }
 
 fn bind_drop_table(dt: &ast::DropTable, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
@@ -297,6 +307,27 @@ mod tests {
         let (_tmp, store) = seeded_store();
         let plan = plan_of("SHOW TABLES", &store).unwrap();
         assert_eq!(plan.to_string(), "ShowTables");
+    }
+
+    #[test]
+    fn describe_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("DESCRIBE users", &store).unwrap();
+        assert_eq!(plan.to_string(), "Describe users");
+    }
+
+    #[test]
+    fn describe_extended_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("DESCRIBE EXTENDED users", &store).unwrap();
+        assert_eq!(plan.to_string(), "Describe users EXTENDED");
+    }
+
+    #[test]
+    fn describe_rejects_unknown_table() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("DESCRIBE ghosts", &store).unwrap_err();
+        assert!(err.to_string().contains("no such table"), "{err}");
     }
 
     #[test]

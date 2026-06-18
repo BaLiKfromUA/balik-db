@@ -125,7 +125,8 @@ pub(super) fn execute_stream<'a>(
         PhysicalPlan::CreateTableExec { .. }
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
-        | PhysicalPlan::ShowTablesExec => Err(Error::other(
+        | PhysicalPlan::ShowTablesExec
+        | PhysicalPlan::DescribeExec { .. } => Err(Error::other(
             "DDL/DML operator cannot appear inside a query pipeline",
         )),
     }
@@ -156,7 +157,10 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         PhysicalPlan::CreateTableExec { .. }
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
-        | PhysicalPlan::ShowTablesExec => Err(Error::other("statement produces no row output")),
+        | PhysicalPlan::ShowTablesExec
+        | PhysicalPlan::DescribeExec { .. } => {
+            Err(Error::other("statement produces no row output"))
+        }
     }
 }
 

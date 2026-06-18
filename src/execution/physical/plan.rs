@@ -44,6 +44,12 @@ pub enum PhysicalPlan {
         table: String,
     },
     ShowTablesExec,
+    DescribeExec {
+        table: String,
+        /// Also emit the table's storage-level metadata (id, storage track,
+        /// row-group size) after the column rows.
+        extended: bool,
+    },
     TableScanExec {
         table: String,
         /// Columns to decode from storage, in output order. `None` means every
@@ -114,6 +120,10 @@ impl PhysicalPlan {
             }
             PhysicalPlan::DropTableExec { table } => write!(f, "{pad}DropTableExec {table}"),
             PhysicalPlan::ShowTablesExec => write!(f, "{pad}ShowTablesExec"),
+            PhysicalPlan::DescribeExec { table, extended } => {
+                let suffix = if *extended { " EXTENDED" } else { "" };
+                write!(f, "{pad}DescribeExec {table}{suffix}")
+            }
             PhysicalPlan::TableScanExec {
                 table,
                 projection,

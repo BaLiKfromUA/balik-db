@@ -66,7 +66,8 @@ fn collect_required_columns(
         LogicalPlan::CreateTable { .. }
         | LogicalPlan::Insert { .. }
         | LogicalPlan::DropTable { .. }
-        | LogicalPlan::ShowTables => false,
+        | LogicalPlan::ShowTables
+        | LogicalPlan::Describe { .. } => false,
     }
 }
 
@@ -118,7 +119,8 @@ fn set_scan_columns(plan: LogicalPlan, columns: Vec<String>) -> LogicalPlan {
         dml @ (LogicalPlan::CreateTable { .. }
         | LogicalPlan::Insert { .. }
         | LogicalPlan::DropTable { .. }
-        | LogicalPlan::ShowTables) => dml,
+        | LogicalPlan::ShowTables
+        | LogicalPlan::Describe { .. }) => dml,
     }
 }
 
