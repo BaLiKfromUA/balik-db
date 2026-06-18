@@ -423,6 +423,96 @@ mod tests {
         assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
+    // ---- DELETE ----
+
+    #[test]
+    fn delete_with_where() {
+        let stmt = parse("DELETE FROM users WHERE age > 18").unwrap();
+        let Statement::Delete(del) = stmt else {
+            panic!("expected Delete, got {stmt:?}");
+        };
+        assert_eq!(del.table, "users");
+        assert_eq!(
+            del.filter,
+            Some(Expr::Compare {
+                left: Box::new(col("age")),
+                op: CompareOp::Gt,
+                right: Box::new(int(18)),
+            })
+        );
+    }
+
+    #[test]
+    fn delete_without_where() {
+        let stmt = parse("DELETE FROM users").unwrap();
+        let Statement::Delete(del) = stmt else {
+            panic!("expected Delete, got {stmt:?}");
+        };
+        assert_eq!(del.table, "users");
+        assert!(del.filter.is_none());
+    }
+
+    #[test]
+    fn delete_with_returning_is_rejected() {
+        let err = parse("DELETE FROM users WHERE id = 1 RETURNING id").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
+    // ---- UPDATE ----
+
+    #[test]
+    fn update_set_with_where() {
+        let stmt = parse("UPDATE users SET age = 21 WHERE id = 1").unwrap();
+        let Statement::Update(upd) = stmt else {
+            panic!("expected Update, got {stmt:?}");
+        };
+        assert_eq!(upd.table, "users");
+        assert_eq!(
+            upd.assignments,
+            vec![Assignment {
+                column: "age".into(),
+                value: Literal::Int(21),
+            }]
+        );
+        assert_eq!(
+            upd.filter,
+            Some(Expr::Compare {
+                left: Box::new(col("id")),
+                op: CompareOp::Eq,
+                right: Box::new(int(1)),
+            })
+        );
+    }
+
+    #[test]
+    fn update_multiple_assignments_without_where() {
+        let stmt = parse("UPDATE users SET name = 'Bob', age = 30").unwrap();
+        let Statement::Update(upd) = stmt else {
+            panic!("expected Update, got {stmt:?}");
+        };
+        assert_eq!(
+            upd.assignments,
+            vec![
+                Assignment {
+                    column: "name".into(),
+                    value: Literal::Text("Bob".into()),
+                },
+                Assignment {
+                    column: "age".into(),
+                    value: Literal::Int(30),
+                },
+            ]
+        );
+        assert!(upd.filter.is_none());
+    }
+
+    #[test]
+    fn update_computed_rhs_is_rejected() {
+        // `age = age + 1` is a computed expression, outside the supported subset.
+        let err = parse("UPDATE users SET age = age + 1").unwrap_err();
+        assert!(err.to_string().contains("value"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]

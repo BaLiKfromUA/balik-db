@@ -117,15 +117,17 @@ id | total
 2  | 250
 ```
 
-8. Update a row
+8. Update rows
 
-Updates are modeled as `delete + insert`, so the row gets a new rid — the
-old one becomes a tombstone and the new value is appended at the tail.
+Rows are updated with SQL through the `query` command. A `WHERE` clause limits
+the change to matching rows; omitting it updates every row. Internally each
+update is a `delete + insert`, so the row gets a new rid (the old one becomes a
+tombstone and the new value is appended at the tail).
 
 ```bash
-./balik-cli row-update --table orders --rid 0 --values "1,150"
+./balik-cli query --sql "UPDATE orders SET total = 150 WHERE id = 1"
 
-rid 0: updated as rid 2
+Updated 1 row(s) in 'orders'
 
 ./balik-cli query --sql "SELECT * FROM orders"
 
@@ -135,12 +137,15 @@ id | total
 1  | 150
 ```
 
-9. Delete a row
+9. Delete rows
+
+Rows are deleted with SQL through the `query` command. A `WHERE` clause removes
+only matching rows; omitting it removes every row in the table.
 
 ```bash
-./balik-cli row-delete --table orders --rid 1
+./balik-cli query --sql "DELETE FROM orders WHERE id = 2"
 
-rid 1: deleted
+Deleted 1 row(s) from 'orders'
 
 ./balik-cli query --sql "SELECT * FROM orders"
 
@@ -148,8 +153,6 @@ id | total
 ---+------
 1  | 150
 ```
-
-Deleting an unknown or already-deleted rid fails cleanly with `no such record`.
 
 10. Drop a table
 
@@ -319,7 +322,6 @@ src/
     tables.rs          // persistent catalog: catalog.toml + manifest.toml + next_rid
   cli/                 // command-line frontend
     mod.rs             // Args, Command, parse()
-    values.rs          // --values parser for row-update
     commands/
       mod.rs
       parse.rs         // parse a SQL query and print its AST
@@ -327,8 +329,6 @@ src/
       query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-      row_update.rs    // update one row, prints the new rid (update = delete + insert)
-      row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
     column_store.rs    // column-store implementation: insert / get / scan / update / delete

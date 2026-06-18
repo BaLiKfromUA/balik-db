@@ -15,7 +15,7 @@
 
 use std::fmt;
 
-use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalOp};
+use crate::parser::ast::{Assignment, ColumnDef, CompareOp, DataType, Expr, Literal, LogicalOp};
 use crate::storage::{ScanCompare, ScanPredicate};
 
 /// A node in the physical plan. `CreateTableExec` and `InsertExec` are
@@ -49,6 +49,19 @@ pub enum PhysicalPlan {
         /// Also emit the table's storage-level metadata (id, storage track,
         /// row-group size) after the column rows.
         extended: bool,
+    },
+    DeleteExec {
+        table: String,
+        /// The WHERE predicate selecting rows to remove. `None` deletes every
+        /// row in the table.
+        filter: Option<Expr>,
+    },
+    UpdateExec {
+        table: String,
+        assignments: Vec<Assignment>,
+        /// The WHERE predicate selecting rows to update. `None` updates every
+        /// row in the table.
+        filter: Option<Expr>,
     },
     TableScanExec {
         table: String,
@@ -124,6 +137,27 @@ impl PhysicalPlan {
                 let suffix = if *extended { " EXTENDED" } else { "" };
                 write!(f, "{pad}DescribeExec {table}{suffix}")
             }
+            PhysicalPlan::DeleteExec { table, filter } => match filter {
+                Some(predicate) => {
+                    write!(f, "{pad}DeleteExec {table} [{}]", render_expr(predicate))
+                }
+                None => write!(f, "{pad}DeleteExec {table}"),
+            },
+            PhysicalPlan::UpdateExec {
+                table,
+                assignments,
+                filter,
+            } => {
+                write!(
+                    f,
+                    "{pad}UpdateExec {table} [{}]",
+                    render_assignments(assignments)
+                )?;
+                if let Some(predicate) = filter {
+                    write!(f, " WHERE {}", render_expr(predicate))?;
+                }
+                Ok(())
+            }
             PhysicalPlan::TableScanExec {
                 table,
                 projection,
@@ -193,6 +227,15 @@ fn render_literal(lit: &Literal) -> String {
         Literal::Text(s) => format!("'{s}'"),
         Literal::Null => "NULL".to_string(),
     }
+}
+
+/// Render an UPDATE's SET list as `col = value, ...`.
+fn render_assignments(assignments: &[Assignment]) -> String {
+    assignments
+        .iter()
+        .map(|a| format!("{} = {}", a.column, render_literal(&a.value)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Render a WHERE expression in readable infix form, e.g. `age > 18`.

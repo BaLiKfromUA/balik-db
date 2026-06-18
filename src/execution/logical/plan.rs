@@ -17,7 +17,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal, LogicalOp};
+use crate::parser::ast::{Assignment, ColumnDef, CompareOp, DataType, Expr, Literal, LogicalOp};
 
 /// A node in the logical plan. `CreateTable` and `Insert` are standalone roots;
 /// the relational operators (`Scan`, `Filter`, `Projection`, `Sort`, `Limit`)
@@ -53,6 +53,21 @@ pub enum LogicalPlan {
         /// Also report the table's storage-level metadata (id, storage track,
         /// row-group size), not just its columns.
         extended: bool,
+    },
+    Delete {
+        table: String,
+        /// The WHERE predicate selecting rows to remove. `None` deletes every
+        /// row in the table.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<Expr>,
+    },
+    Update {
+        table: String,
+        assignments: Vec<Assignment>,
+        /// The WHERE predicate selecting rows to update. `None` updates every
+        /// row in the table.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<Expr>,
     },
     Scan {
         table: String,
@@ -125,6 +140,27 @@ impl LogicalPlan {
                 let suffix = if *extended { " EXTENDED" } else { "" };
                 write!(f, "{pad}Describe {table}{suffix}")
             }
+            LogicalPlan::Delete { table, filter } => match filter {
+                Some(predicate) => {
+                    write!(f, "{pad}Delete {table} [{}]", render_expr(predicate))
+                }
+                None => write!(f, "{pad}Delete {table}"),
+            },
+            LogicalPlan::Update {
+                table,
+                assignments,
+                filter,
+            } => {
+                write!(
+                    f,
+                    "{pad}Update {table} [{}]",
+                    render_assignments(assignments)
+                )?;
+                if let Some(predicate) = filter {
+                    write!(f, " WHERE {}", render_expr(predicate))?;
+                }
+                Ok(())
+            }
             LogicalPlan::Scan { table, columns } => match columns {
                 Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
                 None => write!(f, "{pad}Scan {table}"),
@@ -182,6 +218,15 @@ fn render_literal(lit: &Literal) -> String {
         Literal::Text(s) => format!("'{s}'"),
         Literal::Null => "NULL".to_string(),
     }
+}
+
+/// Render an UPDATE's SET list as `col = value, ...`.
+fn render_assignments(assignments: &[Assignment]) -> String {
+    assignments
+        .iter()
+        .map(|a| format!("{} = {}", a.column, render_literal(&a.value)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Render a WHERE expression in readable infix form, e.g. `age > 18`,

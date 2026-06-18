@@ -627,7 +627,6 @@ fn group_can_match(op: ScanCompare, value: i64, min: i64, max: i64) -> bool {
 /// One row group loaded into memory for the duration of an in-flight scan.
 /// Held one-at-a-time inside `ScanState` so memory usage tops out at the
 /// rows of a single row group, not the whole table.
-#[allow(dead_code)] // backs the row-oriented `Storage::scan`; see its doc comment
 struct LoadedGroup {
     /// Per-column decoded values, in `columns` order.
     columns: Vec<Vec<Value>>,
@@ -642,7 +641,6 @@ struct LoadedGroup {
 /// offsets within the group, and stops when `current_group * row_group_size`
 /// reaches the snapshotted `total_rows`. After a load failure, `errored`
 /// pins it shut so the caller can't accidentally resume past corruption.
-#[allow(dead_code)] // backs the row-oriented `Storage::scan`; see its doc comment
 struct ScanState {
     table_dir: PathBuf,
     columns: Vec<Column>,
@@ -656,7 +654,6 @@ struct ScanState {
 }
 
 impl ScanState {
-    #[allow(dead_code)] // backs the row-oriented `Storage::scan`; see its doc comment
     fn load_current_group(&mut self) -> Result<(), Error> {
         let rg_dir = row_group_dir(&self.table_dir, self.current_group);
         let mut columns = Vec::with_capacity(self.columns.len());

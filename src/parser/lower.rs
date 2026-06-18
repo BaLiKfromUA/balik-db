@@ -31,8 +31,10 @@ pub fn lower_statement(stmt: sql::Statement) -> Result<Statement> {
             table_name,
             ..
         } => lower_describe(describe_alias, hive_format, table_name).map(Statement::Describe),
+        sql::Statement::Delete(del) => lower_delete(del).map(Statement::Delete),
+        sql::Statement::Update(upd) => lower_update(upd).map(Statement::Update),
         other => Err(ParseError::unsupported(format!(
-            "only CREATE TABLE, INSERT, SELECT, DROP TABLE, SHOW TABLES and DESCRIBE are supported, not `{}`",
+            "only CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, DROP TABLE, SHOW TABLES and DESCRIBE are supported, not `{}`",
             statement_keyword(&other)
         ))),
     }
@@ -99,6 +101,111 @@ fn lower_drop_table(
     };
     let table = single_name(name)?;
     Ok(DropTable { table })
+}
+
+// ---- DELETE ----------------------------------------------------------------
+
+fn lower_delete(del: sql::Delete) -> Result<Delete> {
+    let sql::Delete {
+        tables,
+        from,
+        using,
+        selection,
+        returning,
+        output,
+        order_by,
+        limit,
+        ..
+    } = del;
+    // Only the single-table `DELETE FROM t [WHERE ...]` form is supported.
+    if !tables.is_empty() {
+        return Err(ParseError::unsupported("multi-table DELETE"));
+    }
+    if using.is_some() {
+        return Err(ParseError::unsupported("DELETE ... USING"));
+    }
+    if returning.is_some() {
+        return Err(ParseError::unsupported("DELETE ... RETURNING"));
+    }
+    if output.is_some() {
+        return Err(ParseError::unsupported("DELETE ... OUTPUT"));
+    }
+    if !order_by.is_empty() {
+        return Err(ParseError::unsupported("DELETE ... ORDER BY"));
+    }
+    if limit.is_some() {
+        return Err(ParseError::unsupported("DELETE ... LIMIT"));
+    }
+    let relations = match from {
+        sql::FromTable::WithFromKeyword(t) | sql::FromTable::WithoutKeyword(t) => t,
+    };
+    let table = lower_from(relations)?;
+    let filter = selection.map(lower_expr).transpose()?;
+    Ok(Delete { table, filter })
+}
+
+// ---- UPDATE ----------------------------------------------------------------
+
+fn lower_update(upd: sql::Update) -> Result<Update> {
+    let sql::Update {
+        table,
+        assignments,
+        from,
+        selection,
+        returning,
+        output,
+        or,
+        order_by,
+        limit,
+        ..
+    } = upd;
+    // Only the single-table `UPDATE t SET ... [WHERE ...]` form is supported.
+    if from.is_some() {
+        return Err(ParseError::unsupported("UPDATE ... FROM"));
+    }
+    if returning.is_some() {
+        return Err(ParseError::unsupported("UPDATE ... RETURNING"));
+    }
+    if output.is_some() {
+        return Err(ParseError::unsupported("UPDATE ... OUTPUT"));
+    }
+    if or.is_some() {
+        return Err(ParseError::unsupported("UPDATE OR (conflict clause)"));
+    }
+    if !order_by.is_empty() {
+        return Err(ParseError::unsupported("UPDATE ... ORDER BY"));
+    }
+    if limit.is_some() {
+        return Err(ParseError::unsupported("UPDATE ... LIMIT"));
+    }
+    if !table.joins.is_empty() {
+        return Err(ParseError::unsupported("JOIN in UPDATE"));
+    }
+    let table = lower_from(vec![table])?;
+
+    let assignments = assignments
+        .into_iter()
+        .map(lower_assignment)
+        .collect::<Result<Vec<_>>>()?;
+    let filter = selection.map(lower_expr).transpose()?;
+    Ok(Update {
+        table,
+        assignments,
+        filter,
+    })
+}
+
+/// Lower one `column = literal` assignment. The target must be a single bare
+/// column; the right-hand side must be a literal (no computed expressions).
+fn lower_assignment(assignment: sql::Assignment) -> Result<Assignment> {
+    let column = match assignment.target {
+        sql::AssignmentTarget::ColumnName(name) => single_name(&name)?,
+        sql::AssignmentTarget::Tuple(_) => {
+            return Err(ParseError::unsupported("tuple assignment in SET"));
+        }
+    };
+    let value = lower_literal(assignment.value)?;
+    Ok(Assignment { column, value })
 }
 
 // ---- CREATE TABLE ----------------------------------------------------------

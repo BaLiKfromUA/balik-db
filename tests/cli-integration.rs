@@ -419,7 +419,7 @@ fn table_scan_on_empty_table_reports_no_rows() {
 }
 
 #[test]
-fn row_delete_hides_row_from_get_and_scan_across_restart() {
+fn delete_where_removes_matching_row_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
@@ -436,11 +436,9 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
         run_query(db, sql).success();
     }
 
-    balik_cli()
-        .args(["row-delete", "--db", db, "--table", "users", "--rid", "1"])
-        .assert()
+    run_query(db, "DELETE FROM users WHERE id = 2")
         .success()
-        .stdout(predicate::str::contains("rid 1: deleted"));
+        .stdout(predicate::str::contains("Deleted 1 row(s) from 'users'"));
 
     // Fresh process → the tombstoned row (bob, id 2) no longer matches a lookup.
     run_query(db, "SELECT * FROM users WHERE id = 2")
@@ -456,7 +454,31 @@ fn row_delete_hides_row_from_get_and_scan_across_restart() {
 }
 
 #[test]
-fn row_update_reassigns_rid_and_persists_across_restart() {
+fn delete_without_where_removes_all_rows_across_restart() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+
+    run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
+    for sql in [
+        "INSERT INTO users VALUES (1)",
+        "INSERT INTO users VALUES (2)",
+        "INSERT INTO users VALUES (3)",
+    ] {
+        run_query(db, sql).success();
+    }
+
+    run_query(db, "DELETE FROM users")
+        .success()
+        .stdout(predicate::str::contains("Deleted 3 row(s) from 'users'"));
+
+    // Fresh process → the table is empty but still present (header only).
+    run_query(db, "SELECT id FROM users")
+        .success()
+        .stdout("id\n--\n");
+}
+
+#[test]
+fn update_where_changes_matching_row_across_restart() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
 
@@ -472,69 +494,87 @@ fn row_update_reassigns_rid_and_persists_across_restart() {
         run_query(db, sql).success();
     }
 
-    // Update rid 0 — should reassign to rid 2 (next_rid at update time).
-    balik_cli()
-        .args([
-            "row-update",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--rid",
-            "0",
-            "--values",
-            "1,alicia",
-        ])
-        .assert()
+    run_query(db, "UPDATE users SET name = 'alicia' WHERE id = 1")
         .success()
-        .stdout(predicate::str::contains("rid 0: updated as rid 2"));
+        .stdout(predicate::str::contains("Updated 1 row(s) in 'users'"));
 
     // Fresh process → a lookup on the updated row reads back the new value.
-    // (The rid changed, but the row is addressable only by its data now.)
     run_query(db, "SELECT * FROM users WHERE id = 1")
         .success()
         .stdout(predicate::str::contains("alicia"))
-        .stdout(predicate::str::contains("alice").not());
-    // The pre-update row (alice) is gone; bob and the reassigned alicia remain.
+        .stdout(predicate::str::contains("alice ").not());
+    // The pre-update value (alice) is gone; bob and the updated alicia remain.
     run_query(db, "SELECT * FROM users")
         .success()
         .stdout(predicate::str::contains("2  | bob"))
-        .stdout(predicate::str::contains("1  | alicia"))
-        .stdout(predicate::str::contains("alice").not());
+        .stdout(predicate::str::contains("1  | alicia"));
 }
 
 #[test]
-fn row_update_unknown_rid_fails() {
+fn update_without_where_changes_all_rows() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
-    run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
-    balik_cli()
-        .args([
-            "row-update",
-            "--db",
-            db,
-            "--table",
-            "users",
-            "--rid",
-            "0",
-            "--values",
-            "1",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such record"));
+    run_query(db, "CREATE TABLE t (id INT NOT NULL, age INT)").success();
+    run_query(db, "INSERT INTO t VALUES (1, 10)").success();
+    run_query(db, "INSERT INTO t VALUES (2, 20)").success();
+
+    run_query(db, "UPDATE t SET age = 0")
+        .success()
+        .stdout(predicate::str::contains("Updated 2 row(s) in 't'"));
+
+    run_query(db, "SELECT age FROM t")
+        .success()
+        .stdout(predicate::str::contains("0"))
+        .stdout(predicate::str::contains("10").not())
+        .stdout(predicate::str::contains("20").not());
 }
 
 #[test]
-fn row_delete_unknown_rid_fails() {
+fn update_matching_no_rows_reports_zero() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    run_query(db, "CREATE TABLE users (id INT NOT NULL, age INT)").success();
+    run_query(db, "INSERT INTO users VALUES (1, 10)").success();
+    // A predicate that matches nothing is a no-op, not an error.
+    run_query(db, "UPDATE users SET age = 99 WHERE id = 5")
+        .success()
+        .stdout(predicate::str::contains("Updated 0 row(s) in 'users'"));
+    run_query(db, "SELECT age FROM users")
+        .success()
+        .stdout(predicate::str::contains("10"));
+}
+
+#[test]
+fn update_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    run_query(db, "UPDATE ghosts SET id = 0")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn delete_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    let db = db.to_str().unwrap();
+    run_query(db, "DELETE FROM ghosts WHERE id = 0")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
+}
+
+#[test]
+fn delete_matching_no_rows_reports_zero() {
     let (_tmp, db) = init_db();
     let db = db.to_str().unwrap();
     run_query(db, "CREATE TABLE users (id INT NOT NULL)").success();
-    balik_cli()
-        .args(["row-delete", "--db", db, "--table", "users", "--rid", "0"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no such record"));
+    run_query(db, "INSERT INTO users VALUES (1)").success();
+    // A predicate that matches nothing is a no-op, not an error.
+    run_query(db, "DELETE FROM users WHERE id = 99")
+        .success()
+        .stdout(predicate::str::contains("Deleted 0 row(s) from 'users'"));
+    run_query(db, "SELECT id FROM users")
+        .success()
+        .stdout(predicate::str::contains("1"));
 }
 
 /// Initialize a db with a `users(id INT, name TEXT, age INT)` table.
@@ -746,6 +786,36 @@ fn explain_drop_table_shows_logical_and_physical_plans() {
         .success()
         .stdout(predicate::str::contains("DropTable users"))
         .stdout(predicate::str::contains("DropTableExec users"));
+}
+
+#[test]
+fn explain_delete_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "DELETE FROM users WHERE age > 18", false)
+        .success()
+        .stdout(predicate::str::contains("Delete users [age > 18]"))
+        .stdout(predicate::str::contains("DeleteExec users [age > 18]"));
+}
+
+#[test]
+fn explain_update_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "UPDATE users SET age = 21 WHERE id = 1", false)
+        .success()
+        .stdout(predicate::str::contains(
+            "Update users [age = 21] WHERE id = 1",
+        ))
+        .stdout(predicate::str::contains(
+            "UpdateExec users [age = 21] WHERE id = 1",
+        ));
+}
+
+#[test]
+fn explain_update_unknown_set_column_fails() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "UPDATE users SET nope = 1", false)
+        .failure()
+        .stderr(predicate::str::contains("unknown column 'nope'"));
 }
 
 #[test]

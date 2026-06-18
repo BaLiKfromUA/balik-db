@@ -17,8 +17,8 @@ use std::collections::BinaryHeap;
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::catalog::tables::TableOptions;
 use crate::error::Error;
-use crate::parser::ast::{ColumnDef, DataType, Literal};
-use crate::storage::{ColumnBatch, Record, Storage, Value};
+use crate::parser::ast::{Assignment, ColumnDef, DataType, Expr, Literal};
+use crate::storage::{ColumnBatch, Record, Rid, Storage, Value};
 
 use super::BatchStream;
 use super::expr;
@@ -36,6 +36,12 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::DropTableExec { table } => exec_drop_table(table, store),
         PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
         PhysicalPlan::DescribeExec { table, extended } => exec_describe(table, *extended, &*store),
+        PhysicalPlan::DeleteExec { table, filter } => exec_delete(table, filter, store),
+        PhysicalPlan::UpdateExec {
+            table,
+            assignments,
+            filter,
+        } => exec_update(table, assignments, filter, store),
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -127,7 +133,9 @@ pub(super) fn execute_stream<'a>(
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
-        | PhysicalPlan::DescribeExec { .. } => Err(Error::other(
+        | PhysicalPlan::DescribeExec { .. }
+        | PhysicalPlan::DeleteExec { .. }
+        | PhysicalPlan::UpdateExec { .. } => Err(Error::other(
             "DDL/DML operator cannot appear inside a query pipeline",
         )),
     }
@@ -159,9 +167,9 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
-        | PhysicalPlan::DescribeExec { .. } => {
-            Err(Error::other("statement produces no row output"))
-        }
+        | PhysicalPlan::DescribeExec { .. }
+        | PhysicalPlan::DeleteExec { .. }
+        | PhysicalPlan::UpdateExec { .. } => Err(Error::other("statement produces no row output")),
     }
 }
 
@@ -213,6 +221,117 @@ fn exec_insert(
         "Inserted into '{table}' as rid {}",
         rid.0
     )))
+}
+
+/// Run a DELETE: scan the table for live rows, keep the rids whose row passes
+/// the optional WHERE predicate (every row when there is none), then tombstone
+/// each one. The rids are collected before any deletion because the scan holds a
+/// shared borrow of storage while deletion needs an exclusive one. Storage
+/// persists the tombstones, so the removal survives a restart.
+fn exec_delete(
+    table: &str,
+    filter: &Option<Expr>,
+    store: &mut dyn Storage,
+) -> Result<QueryResult, Error> {
+    let handle = store.open_table(table)?;
+    let names: Vec<String> = handle
+        .schema
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    let mut victims: Vec<Rid> = Vec::new();
+    for row in store.scan(&handle)? {
+        let (rid, record) = row?;
+        let matched = match filter {
+            None => true,
+            Some(predicate) => {
+                let batch = single_row_batch(&names, &record);
+                expr::evaluate_predicate(predicate, &batch)?[0]
+            }
+        };
+        if matched {
+            victims.push(rid);
+        }
+    }
+
+    let deleted = victims.len();
+    for rid in victims {
+        store.delete(&handle, rid)?;
+    }
+    Ok(QueryResult::Affected(format!(
+        "Deleted {deleted} row(s) from '{table}'"
+    )))
+}
+
+/// Run an UPDATE: scan the table for live rows, and for each row passing the
+/// optional WHERE predicate (every row when there is none), overwrite the SET
+/// columns in a copy of the record. The rid/record pairs are collected before
+/// any mutation because the scan holds a shared borrow of storage while
+/// `update` needs an exclusive one — and because `update` appends the new row at
+/// the tail, draining the scan first keeps it from revisiting rows it just
+/// rewrote. Storage persists each update, so the change survives a restart.
+fn exec_update(
+    table: &str,
+    assignments: &[Assignment],
+    filter: &Option<Expr>,
+    store: &mut dyn Storage,
+) -> Result<QueryResult, Error> {
+    let handle = store.open_table(table)?;
+    let names: Vec<String> = handle
+        .schema
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    // The binder has already checked every SET column exists, so each lookup
+    // resolves. Precompute (column index, new value) once for the whole scan.
+    let targets: Vec<(usize, Value)> = assignments
+        .iter()
+        .map(|a| {
+            let idx = names
+                .iter()
+                .position(|n| n == &a.column)
+                .expect("SET column validated by the binder");
+            (idx, literal_to_value(&a.value))
+        })
+        .collect();
+
+    let mut pending: Vec<(Rid, Record)> = Vec::new();
+    for row in store.scan(&handle)? {
+        let (rid, mut record) = row?;
+        let matched = match filter {
+            None => true,
+            Some(predicate) => {
+                let batch = single_row_batch(&names, &record);
+                expr::evaluate_predicate(predicate, &batch)?[0]
+            }
+        };
+        if matched {
+            for (idx, value) in &targets {
+                record.values[*idx] = value.clone();
+            }
+            pending.push((rid, record));
+        }
+    }
+
+    let updated = pending.len();
+    for (rid, record) in pending {
+        store.update(&handle, rid, record)?;
+    }
+    Ok(QueryResult::Affected(format!(
+        "Updated {updated} row(s) in '{table}'"
+    )))
+}
+
+/// Wrap one record as a single-row column-major batch keyed by `names`, so the
+/// vectorized predicate evaluator can score it like any scanned batch.
+fn single_row_batch(names: &[String], record: &Record) -> ColumnBatch {
+    ColumnBatch {
+        names: names.to_vec(),
+        columns: record.values.iter().map(|v| vec![v.clone()]).collect(),
+    }
 }
 
 /// Run a DROP TABLE: remove the table from the catalog and delete its on-disk
@@ -1267,6 +1386,184 @@ mod tests {
         let scan = scan_t(Some(vec!["id".into()]), vec![]);
         let plan = topk("label", false, 1, scan);
         assert!(execute_stream(&plan, &store).is_err());
+    }
+
+    fn delete(filter: Option<Expr>) -> PhysicalPlan {
+        PhysicalPlan::DeleteExec {
+            table: "t".into(),
+            filter,
+        }
+    }
+
+    /// The sorted ids still live in table `t` after a mutation.
+    fn remaining_ids(store: &dyn Storage) -> Vec<i64> {
+        let handle = store.open_table("t").unwrap();
+        let mut ids: Vec<i64> = store
+            .scan(&handle)
+            .unwrap()
+            .map(|r| match r.unwrap().1.values[0] {
+                Value::Int(n) => n,
+                ref other => panic!("expected int id, got {other:?}"),
+            })
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn delete_exec_with_where_removes_only_matching_rows() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3, 4]);
+        let plan = delete(Some(id_cmp(CompareOp::LtEq, 2)));
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 2 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), vec![3, 4]);
+    }
+
+    #[test]
+    fn delete_exec_without_where_empties_the_table() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3]);
+        let QueryResult::Affected(msg) = execute(&delete(None), &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 3 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn delete_exec_no_match_removes_nothing() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3]);
+        let plan = delete(Some(id_cmp(CompareOp::Gt, 100)));
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 0 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn delete_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::DeleteExec {
+            table: "ghosts".into(),
+            filter: None,
+        };
+        assert!(execute(&plan, &mut store).is_err());
+    }
+
+    fn set(column: &str, value: Literal) -> Assignment {
+        Assignment {
+            column: column.into(),
+            value,
+        }
+    }
+
+    fn update(assignments: Vec<Assignment>, filter: Option<Expr>) -> PhysicalPlan {
+        PhysicalPlan::UpdateExec {
+            table: "t".into(),
+            assignments,
+            filter,
+        }
+    }
+
+    /// The `(id, label)` rows still live in table `t`, sorted by id.
+    fn rows_t(store: &dyn Storage) -> Vec<(i64, Option<String>)> {
+        let handle = store.open_table("t").unwrap();
+        let mut rows: Vec<(i64, Option<String>)> = store
+            .scan(&handle)
+            .unwrap()
+            .map(|r| {
+                let vals = r.unwrap().1.values;
+                let id = match vals[0] {
+                    Value::Int(n) => n,
+                    ref other => panic!("expected int id, got {other:?}"),
+                };
+                let label = match &vals[1] {
+                    Value::Text(s) => Some(s.clone()),
+                    Value::Null => None,
+                    other => panic!("expected text/null label, got {other:?}"),
+                };
+                (id, label)
+            })
+            .collect();
+        rows.sort_by_key(|(id, _)| *id);
+        rows
+    }
+
+    #[test]
+    fn update_exec_with_where_sets_only_matching_rows() {
+        let (_tmp, mut store) =
+            store_with_labels(&[(1, Some("a")), (2, Some("b")), (3, Some("c"))]);
+        let plan = update(
+            vec![set("label", Literal::Text("X".into()))],
+            Some(id_cmp(CompareOp::Eq, 2)),
+        );
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Updated 1 row(s) in 't'"), "{msg}");
+        assert_eq!(
+            rows_t(&store),
+            vec![
+                (1, Some("a".into())),
+                (2, Some("X".into())),
+                (3, Some("c".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_exec_applies_multiple_assignments() {
+        let (_tmp, mut store) = store_with_labels(&[(1, Some("a")), (2, Some("b"))]);
+        let plan = update(
+            vec![
+                set("id", Literal::Int(9)),
+                set("label", Literal::Text("Z".into())),
+            ],
+            Some(id_cmp(CompareOp::Eq, 1)),
+        );
+        execute(&plan, &mut store).unwrap();
+        assert_eq!(
+            rows_t(&store),
+            vec![(2, Some("b".into())), (9, Some("Z".into()))]
+        );
+    }
+
+    #[test]
+    fn update_exec_without_where_updates_all_rows() {
+        let (_tmp, mut store) = store_with_labels(&[(1, Some("a")), (2, Some("b"))]);
+        let plan = update(vec![set("label", Literal::Null)], None);
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Updated 2 row(s) in 't'"), "{msg}");
+        assert_eq!(rows_t(&store), vec![(1, None), (2, None)]);
+    }
+
+    #[test]
+    fn update_exec_no_match_reports_zero() {
+        let (_tmp, mut store) = store_with_labels(&[(1, Some("a"))]);
+        let plan = update(
+            vec![set("label", Literal::Text("x".into()))],
+            Some(id_cmp(CompareOp::Eq, 99)),
+        );
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Updated 0 row(s) in 't'"), "{msg}");
+        assert_eq!(rows_t(&store), vec![(1, Some("a".into()))]);
+    }
+
+    #[test]
+    fn update_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::UpdateExec {
+            table: "ghosts".into(),
+            assignments: vec![set("id", Literal::Int(1))],
+            filter: None,
+        };
+        assert!(execute(&plan, &mut store).is_err());
     }
 
     #[test]
