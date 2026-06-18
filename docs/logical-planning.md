@@ -38,6 +38,7 @@ mismatches surface as `InvalidQuery`; an ill-formed CREATE TABLE surfaces as
 |---------------|----------------------------------------------------|
 | `CreateTable` | define a table (standalone root)                   |
 | `Insert`      | add a row (standalone root)                         |
+| `Update`      | overwrite SET columns in matching/all rows (root)   |
 | `Delete`      | remove matching rows, or all rows (standalone root) |
 | `DropTable`   | remove a table (standalone root)                   |
 | `ShowTables`  | list table names (standalone root)                 |

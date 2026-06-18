@@ -27,7 +27,7 @@ returned AST always means "fully understood".
 ## Supported subset
 
 ```
-statement := create_table | insert | select | delete | drop_table | show_tables | describe
+statement := create_table | insert | select | update | delete | drop_table | show_tables | describe
 
 create_table := CREATE TABLE name '(' column_def (',' column_def)* ')'
 column_def   := name type [NULL | NOT NULL]    -- columns are nullable unless
@@ -37,6 +37,10 @@ type         := INT | TEXT                     -- INT also accepts INTEGER;
 
 insert       := INSERT INTO name VALUES '(' literal (',' literal)* ')'   -- single row
 literal      := integer | "'" string "'" | NULL
+
+update       := UPDATE name SET assignment (',' assignment)* [WHERE expr]
+                                               -- omitting WHERE updates every row
+assignment   := name '=' literal               -- literal right-hand side only
 
 delete       := DELETE FROM name [WHERE expr]  -- omitting WHERE removes every row
 
@@ -64,13 +68,16 @@ Notes:
 
 ## AST shape
 
-`Statement` is one of `CreateTable`, `Insert`, `Select`, `Delete`, `DropTable`,
-`ShowTables`, `Describe` (see `src/parser/ast.rs`):
+`Statement` is one of `CreateTable`, `Insert`, `Select`, `Update`, `Delete`,
+`DropTable`, `ShowTables`, `Describe` (see `src/parser/ast.rs`):
 
 - `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType, nullable: bool }> }`,
   `DataType` ∈ `{ Int, Text }`. `nullable` defaults to `true` and is set to
   `false` by `NOT NULL`.
 - `Insert { table, values: Vec<Literal> }`, `Literal` ∈ `{ Int(i64), Text(String), Null }`.
+- `Update { table, assignments: Vec<Assignment { column, value: Literal }>, filter }`,
+  where `filter` is an optional `Expr` (no `WHERE` means update every row). The
+  assignment value is a literal; computed right-hand sides are not supported.
 - `Delete { table, filter }`, where `filter` is an optional `Expr` (no `WHERE`
   means delete every row).
 - `DropTable { table }`.
