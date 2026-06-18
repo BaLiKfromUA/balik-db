@@ -27,7 +27,7 @@ returned AST always means "fully understood".
 ## Supported subset
 
 ```
-statement := create_table | insert | select | drop_table | show_tables
+statement := create_table | insert | select | drop_table | show_tables | describe
 
 create_table := CREATE TABLE name '(' column_def (',' column_def)* ')'
 column_def   := name type [NULL | NOT NULL]    -- columns are nullable unless
@@ -40,6 +40,9 @@ literal      := integer | "'" string "'" | NULL
 
 drop_table   := DROP TABLE name                -- exactly one table; no IF EXISTS
 show_tables  := SHOW TABLES                     -- no filter/scope/limit clauses
+describe     := (DESCRIBE | DESC) [EXTENDED | FORMATTED] name
+                                               -- EXTENDED/FORMATTED also report
+                                               -- storage-level metadata
 
 select       := SELECT projection FROM name [WHERE expr] [ORDER BY name [ASC|DESC]] [LIMIT integer]
 projection   := '*' | name (',' name)*
@@ -60,7 +63,7 @@ Notes:
 ## AST shape
 
 `Statement` is one of `CreateTable`, `Insert`, `Select`, `DropTable`,
-`ShowTables` (see `src/parser/ast.rs`):
+`ShowTables`, `Describe` (see `src/parser/ast.rs`):
 
 - `CreateTable { table, columns: Vec<ColumnDef { name, ty: DataType, nullable: bool }> }`,
   `DataType` ∈ `{ Int, Text }`. `nullable` defaults to `true` and is set to
@@ -68,6 +71,8 @@ Notes:
 - `Insert { table, values: Vec<Literal> }`, `Literal` ∈ `{ Int(i64), Text(String), Null }`.
 - `DropTable { table }`.
 - `ShowTables` (no fields).
+- `Describe { table, extended }`, where `extended` (set by `EXTENDED` /
+  `FORMATTED`) also reports storage-level metadata.
 - `Select { projections, from, filter, order_by, limit }` where `projections`
   is `All` or `Columns(Vec<String>)`, `filter` is an optional `Expr`, `order_by`
   is an optional `OrderBy { column, descending }`, and `limit` an optional `u64`.

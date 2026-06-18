@@ -92,6 +92,7 @@ does not.
   and `ORDER BY` exists in the table.
 - **DROP TABLE** — the table exists.
 - **SHOW TABLES** — nothing to validate.
+- **DESCRIBE** — the table exists.
 
 ## CLI
 

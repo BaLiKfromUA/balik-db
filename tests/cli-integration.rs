@@ -161,31 +161,46 @@ fn table_create_then_list_shows_both() {
 }
 
 #[test]
-fn table_describe_shows_schema() {
+fn describe_shows_columns() {
     let (_tmp, db) = init_db();
     run_query(
         &db,
-        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL, age INT NOT NULL)",
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL, age INT)",
     )
     .success();
 
-    balik_cli()
-        .args([
-            "table-describe",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
+    run_query(&db, "DESCRIBE users")
         .success()
-        .stdout(predicate::str::contains("Table:          users"))
-        .stdout(predicate::str::contains("Storage:        column-store"))
-        .stdout(predicate::str::contains("Row group size: 8192"))
+        .stdout(predicate::str::contains("column_name"))
         .stdout(predicate::str::contains("id"))
         .stdout(predicate::str::contains("INT"))
+        .stdout(predicate::str::contains("NO"))
         .stdout(predicate::str::contains("name"))
-        .stdout(predicate::str::contains("TEXT"));
+        .stdout(predicate::str::contains("TEXT"))
+        .stdout(predicate::str::contains("age"))
+        .stdout(predicate::str::contains("YES"));
+}
+
+#[test]
+fn describe_extended_shows_storage_metadata() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+
+    run_query(&db, "DESCRIBE EXTENDED users")
+        .success()
+        .stdout(predicate::str::contains("# table_id"))
+        .stdout(predicate::str::contains("# storage"))
+        .stdout(predicate::str::contains("column-store"))
+        .stdout(predicate::str::contains("# row_group_size"))
+        .stdout(predicate::str::contains("8192"));
+}
+
+#[test]
+fn describe_unknown_table_fails() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "DESCRIBE ghosts")
+        .failure()
+        .stderr(predicate::str::contains("no such table"));
 }
 
 #[test]
@@ -240,17 +255,9 @@ fn tables_persist_across_restart() {
         .stdout(predicate::str::contains("orders"))
         .stdout(predicate::str::contains("users"));
 
-    balik_cli()
-        .args([
-            "table-describe",
-            "--db",
-            db.to_str().unwrap(),
-            "--table",
-            "users",
-        ])
-        .assert()
+    run_query(&db, "DESCRIBE users")
         .success()
-        .stdout(predicate::str::contains("Table:          users"))
+        .stdout(predicate::str::contains("id"))
         .stdout(predicate::str::contains("name"));
 }
 
