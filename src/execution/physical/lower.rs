@@ -48,6 +48,15 @@ fn lower_node(plan: &LogicalPlan, prune: &[ScanPredicate]) -> PhysicalPlan {
             table: table.clone(),
             filter: filter.clone(),
         },
+        LogicalPlan::Update {
+            table,
+            assignments,
+            filter,
+        } => PhysicalPlan::UpdateExec {
+            table: table.clone(),
+            assignments: assignments.clone(),
+            filter: filter.clone(),
+        },
         LogicalPlan::Scan { table, columns } => PhysicalPlan::TableScanExec {
             table: table.clone(),
             projection: columns.clone(),
@@ -182,6 +191,18 @@ mod tests {
     fn delete_without_where_lowers_to_delete_exec() {
         let physical = lowered("DELETE FROM users", false);
         assert_eq!(physical, "DeleteExec users");
+    }
+
+    #[test]
+    fn update_with_where_lowers_to_update_exec() {
+        let physical = lowered("UPDATE users SET age = 21 WHERE id = 1", false);
+        assert_eq!(physical, "UpdateExec users [age = 21] WHERE id = 1");
+    }
+
+    #[test]
+    fn update_multiple_assignments_lowers_to_update_exec() {
+        let physical = lowered("UPDATE users SET name = 'Bob', age = 30", false);
+        assert_eq!(physical, "UpdateExec users [name = 'Bob', age = 30]");
     }
 
     #[test]

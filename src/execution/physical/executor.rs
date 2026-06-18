@@ -37,6 +37,9 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
         PhysicalPlan::DescribeExec { table, extended } => exec_describe(table, *extended, &*store),
         PhysicalPlan::DeleteExec { table, filter } => exec_delete(table, filter, store),
+        PhysicalPlan::UpdateExec { .. } => {
+            Err(Error::other("UPDATE execution is not yet implemented"))
+        }
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -129,7 +132,8 @@ pub(super) fn execute_stream<'a>(
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
         | PhysicalPlan::DescribeExec { .. }
-        | PhysicalPlan::DeleteExec { .. } => Err(Error::other(
+        | PhysicalPlan::DeleteExec { .. }
+        | PhysicalPlan::UpdateExec { .. } => Err(Error::other(
             "DDL/DML operator cannot appear inside a query pipeline",
         )),
     }
@@ -162,7 +166,8 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
         | PhysicalPlan::DescribeExec { .. }
-        | PhysicalPlan::DeleteExec { .. } => Err(Error::other("statement produces no row output")),
+        | PhysicalPlan::DeleteExec { .. }
+        | PhysicalPlan::UpdateExec { .. } => Err(Error::other("statement produces no row output")),
     }
 }
 

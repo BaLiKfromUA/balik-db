@@ -23,6 +23,7 @@ pub enum Statement {
     ShowTables,
     Describe(Describe),
     Delete(Delete),
+    Update(Update),
 }
 
 /// `CREATE TABLE name (col TYPE, ...)`.
@@ -77,6 +78,23 @@ pub struct Insert {
 pub struct Delete {
     pub table: String,
     pub filter: Option<Expr>,
+}
+
+/// `UPDATE name SET assignments [WHERE filter]` — overwrite the listed columns
+/// in the rows matching `filter`, or in every row when there is no `WHERE`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Update {
+    pub table: String,
+    pub assignments: Vec<Assignment>,
+    pub filter: Option<Expr>,
+}
+
+/// One `column = value` pair in an UPDATE's SET clause. The value is a literal;
+/// computed right-hand sides are not part of the supported subset.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Assignment {
+    pub column: String,
+    pub value: Literal,
 }
 
 /// A literal value appearing in an INSERT row or a WHERE comparison.

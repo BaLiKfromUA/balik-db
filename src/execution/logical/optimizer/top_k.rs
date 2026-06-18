@@ -64,7 +64,8 @@ pub(super) fn apply(plan: LogicalPlan) -> LogicalPlan {
         | LogicalPlan::DropTable { .. }
         | LogicalPlan::ShowTables
         | LogicalPlan::Describe { .. }
-        | LogicalPlan::Delete { .. }) => leaf,
+        | LogicalPlan::Delete { .. }
+        | LogicalPlan::Update { .. }) => leaf,
     }
 }
 

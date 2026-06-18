@@ -792,6 +792,27 @@ fn explain_delete_shows_logical_and_physical_plans() {
 }
 
 #[test]
+fn explain_update_shows_logical_and_physical_plans() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "UPDATE users SET age = 21 WHERE id = 1", false)
+        .success()
+        .stdout(predicate::str::contains(
+            "Update users [age = 21] WHERE id = 1",
+        ))
+        .stdout(predicate::str::contains(
+            "UpdateExec users [age = 21] WHERE id = 1",
+        ));
+}
+
+#[test]
+fn explain_update_unknown_set_column_fails() {
+    let (_tmp, db) = init_db_with_users();
+    explain(&db, "UPDATE users SET nope = 1", false)
+        .failure()
+        .stderr(predicate::str::contains("unknown column 'nope'"));
+}
+
+#[test]
 fn explain_drop_unknown_table_fails() {
     let (_tmp, db) = init_db();
     explain(&db, "DROP TABLE ghosts", false)

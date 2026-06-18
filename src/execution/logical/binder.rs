@@ -27,7 +27,39 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::ShowTables => Ok(LogicalPlan::ShowTables),
         Statement::Describe(d) => bind_describe(d, storage),
         Statement::Delete(del) => bind_delete(del, storage),
+        Statement::Update(upd) => bind_update(upd, storage),
     }
+}
+
+fn bind_update(upd: &ast::Update, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
+    let desc = storage.describe_table(&upd.table)?;
+    let columns = &desc.schema.columns;
+    let known: HashSet<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+
+    // Each SET target must exist, and its literal must fit the column's type and
+    // nullability — reusing the same checks an INSERT value goes through.
+    for assignment in &upd.assignments {
+        ensure_column_exists(&known, &assignment.column, &upd.table, "SET")?;
+        let col = columns
+            .iter()
+            .find(|c| c.name == assignment.column)
+            .expect("column existence just checked");
+        check_value(&assignment.value, col, &upd.table)?;
+    }
+
+    if let Some(filter) = &upd.filter {
+        let mut referenced = Vec::new();
+        collect_expr_columns(filter, &mut referenced);
+        for name in &referenced {
+            ensure_column_exists(&known, name, &upd.table, "WHERE")?;
+        }
+    }
+
+    Ok(LogicalPlan::Update {
+        table: upd.table.clone(),
+        assignments: upd.assignments.clone(),
+        filter: upd.filter.clone(),
+    })
 }
 
 fn bind_delete(del: &ast::Delete, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
@@ -353,6 +385,66 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("WHERE references unknown column 'nope'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_with_where_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("UPDATE users SET age = 21 WHERE id = 1", &store).unwrap();
+        assert_eq!(plan.to_string(), "Update users [age = 21] WHERE id = 1");
+    }
+
+    #[test]
+    fn update_multiple_assignments_without_where_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("UPDATE users SET name = 'Bob', age = 30", &store).unwrap();
+        assert_eq!(plan.to_string(), "Update users [name = 'Bob', age = 30]");
+    }
+
+    #[test]
+    fn update_rejects_unknown_table() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("UPDATE ghosts SET age = 1", &store).unwrap_err();
+        assert!(err.to_string().contains("no such table"), "{err}");
+    }
+
+    #[test]
+    fn update_rejects_unknown_set_column() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("UPDATE users SET nope = 1", &store).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SET references unknown column 'nope'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_rejects_unknown_where_column() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("UPDATE users SET age = 1 WHERE nope = 1", &store).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("WHERE references unknown column 'nope'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_rejects_type_mismatch_in_assignment() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("UPDATE users SET age = 'old'", &store).unwrap_err();
+        assert!(err.to_string().contains("expects INT, got TEXT"), "{err}");
+    }
+
+    #[test]
+    fn update_rejects_null_in_not_null_column() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("UPDATE users SET id = NULL", &store).unwrap_err();
+        assert!(
+            err.to_string().contains("is NOT NULL but got NULL"),
             "{err}"
         );
     }
