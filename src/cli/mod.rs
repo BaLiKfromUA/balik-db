@@ -61,14 +61,6 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Print the schema and layout info for one table.
-    TableDescribe {
-        #[arg(long = "db", default_value = "./balik_db")]
-        path: PathBuf,
-        #[arg(long)]
-        table: String,
-    },
-
     /// Delete a single row by its record id.
     RowDelete {
         #[arg(long = "db", default_value = "./balik_db")]

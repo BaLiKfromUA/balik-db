@@ -50,10 +50,11 @@ lazy — `LimitExec` can stop early, and `TableScanExec` can skip row groups —
 without materializing the whole table. Two operators **block**: `SortExec` and
 `TopKExec` must see all of their input before they can emit anything.
 
-`CreateTableExec`, `InsertExec`, `DropTableExec`, and `ShowTablesExec` are not
-part of the batch pipeline: they run for their effect against storage at the
-root. The first three report a `QueryResult::Affected` line; `ShowTablesExec`
-builds its rows directly from the catalog.
+`CreateTableExec`, `InsertExec`, `DropTableExec`, `ShowTablesExec`, and
+`DescribeExec` are not part of the batch pipeline: they run for their effect
+against storage at the root. The first three report a `QueryResult::Affected`
+line; `ShowTablesExec` and `DescribeExec` build their rows directly from the
+catalog.
 
 ## Operators
 
@@ -63,6 +64,7 @@ builds its rows directly from the catalog.
 | `InsertExec`      | root      | append one row                                          |
 | `DropTableExec`   | root      | remove a table from the catalog and delete its files    |
 | `ShowTablesExec`  | root      | list table names as a one-column result                 |
+| `DescribeExec`    | root      | list a table's columns (+ storage metadata if EXTENDED) |
 | `TableScanExec`   | streaming | read column batches from storage, skipping row groups   |
 | `FilterExec`      | streaming | keep rows matching a WHERE predicate                    |
 | `ProjectionExec`  | streaming | select / reorder columns                                |
@@ -95,8 +97,8 @@ rows whose mask entry is `true`.
 
 A statement produces a `QueryResult`:
 
-- `Rows { names, rows }` for `SELECT` and `SHOW TABLES`, rendered as a simple
-  aligned text table.
+- `Rows { names, rows }` for `SELECT`, `SHOW TABLES`, and `DESCRIBE`, rendered as
+  a simple aligned text table.
 - `Affected(message)` for `CREATE TABLE` / `INSERT` / `DROP TABLE`.
 
 The output column names are derived from the plan shape (a projection fixes them;

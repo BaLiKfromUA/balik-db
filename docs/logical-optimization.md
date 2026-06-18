@@ -77,7 +77,7 @@ Projection [id, name]            Projection [id, name]
 `age` appears in the scan list — the filter needs it — even though it is not
 projected. `SELECT *` lists every column, since the binder already expanded it
 under the `Projection`. Plans with no `Scan` (`CreateTable`, `Insert`,
-`DropTable`, `ShowTables`) pass through unchanged.
+`DropTable`, `ShowTables`, `Describe`) pass through unchanged.
 
 ## CLI
 

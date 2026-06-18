@@ -59,16 +59,26 @@ orders
 
 5. Describe table
 
-```bash
-./balik-cli table-describe --table orders
+A table's columns are inspected with SQL through the `query` command. Add
+`EXTENDED` (or `FORMATTED`) to also report storage-level metadata:
 
-Table:          orders
-ID:             1
-Storage:        column-store
-Row group size: 8192
-Columns:
-  id                       INT    NOT NULL
-  total                    INT    NOT NULL
+```bash
+./balik-cli query --sql "DESCRIBE orders"
+
+column_name | type | nullable
+------------+------+---------
+id          | INT  | NO
+total       | INT  | NO
+
+./balik-cli query --sql "DESCRIBE EXTENDED orders"
+
+column_name      | type         | nullable
+-----------------+--------------+---------
+id               | INT          | NO
+total            | INT          | NO
+# table_id       | 1            |
+# storage        | column-store |
+# row_group_size | 8192         |
 ```
 
 6. Insert rows and read them back
@@ -317,7 +327,6 @@ src/
       query.rs         // run a SQL query end to end and print the result
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-      table_describe.rs// print a table's schema and storage info
       row_update.rs    // update one row, prints the new rid (update = delete + insert)
       row_delete.rs    // tombstone one row by rid
   storage/             // storage trait + column-store implementation

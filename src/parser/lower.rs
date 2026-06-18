@@ -25,11 +25,40 @@ pub fn lower_statement(stmt: sql::Statement) -> Result<Statement> {
             ..
         } => lower_drop_table(object_type, if_exists, names).map(Statement::DropTable),
         sql::Statement::ShowTables { show_options, .. } => lower_show_tables(show_options),
+        sql::Statement::ExplainTable {
+            describe_alias,
+            hive_format,
+            table_name,
+            ..
+        } => lower_describe(describe_alias, hive_format, table_name).map(Statement::Describe),
         other => Err(ParseError::unsupported(format!(
-            "only CREATE TABLE, INSERT, SELECT, DROP TABLE and SHOW TABLES are supported, not `{}`",
+            "only CREATE TABLE, INSERT, SELECT, DROP TABLE, SHOW TABLES and DESCRIBE are supported, not `{}`",
             statement_keyword(&other)
         ))),
     }
+}
+
+// ---- DESCRIBE --------------------------------------------------------------
+
+fn lower_describe(
+    alias: sql::DescribeAlias,
+    hive_format: Option<sql::HiveDescribeFormat>,
+    table_name: sql::ObjectName,
+) -> Result<Describe> {
+    // `EXPLAIN <table>` reaches this arm too, but EXPLAIN is reserved for the
+    // plan-printing path; only the DESCRIBE / DESC spellings inspect a schema.
+    match alias {
+        sql::DescribeAlias::Describe | sql::DescribeAlias::Desc => {}
+        sql::DescribeAlias::Explain => {
+            return Err(ParseError::unsupported(
+                "EXPLAIN of a table (use DESCRIBE to inspect a schema)",
+            ));
+        }
+    }
+    // FORMATTED and EXTENDED both opt into the storage-level metadata.
+    let extended = hive_format.is_some();
+    let table = single_name(&table_name)?;
+    Ok(Describe { table, extended })
 }
 
 // ---- SHOW TABLES -----------------------------------------------------------

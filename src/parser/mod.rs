@@ -375,6 +375,54 @@ mod tests {
         assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
+    // ---- DESCRIBE ----
+
+    #[test]
+    fn describe_basic() {
+        let stmt = parse("DESCRIBE users").unwrap();
+        let Statement::Describe(d) = stmt else {
+            panic!("expected Describe, got {stmt:?}");
+        };
+        assert_eq!(d.table, "users");
+        assert!(!d.extended);
+    }
+
+    #[test]
+    fn describe_desc_alias() {
+        let stmt = parse("DESC users").unwrap();
+        assert_eq!(
+            stmt,
+            Statement::Describe(crate::parser::ast::Describe {
+                table: "users".into(),
+                extended: false,
+            })
+        );
+    }
+
+    #[test]
+    fn describe_extended_sets_flag() {
+        let stmt = parse("DESCRIBE EXTENDED users").unwrap();
+        let Statement::Describe(d) = stmt else {
+            panic!("expected Describe, got {stmt:?}");
+        };
+        assert!(d.extended);
+    }
+
+    #[test]
+    fn describe_formatted_sets_flag() {
+        let stmt = parse("DESCRIBE FORMATTED users").unwrap();
+        let Statement::Describe(d) = stmt else {
+            panic!("expected Describe, got {stmt:?}");
+        };
+        assert!(d.extended);
+    }
+
+    #[test]
+    fn explain_table_alias_is_rejected() {
+        let err = parse("EXPLAIN users").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]

@@ -40,6 +40,10 @@ fn lower_node(plan: &LogicalPlan, prune: &[ScanPredicate]) -> PhysicalPlan {
             table: table.clone(),
         },
         LogicalPlan::ShowTables => PhysicalPlan::ShowTablesExec,
+        LogicalPlan::Describe { table, extended } => PhysicalPlan::DescribeExec {
+            table: table.clone(),
+            extended: *extended,
+        },
         LogicalPlan::Scan { table, columns } => PhysicalPlan::TableScanExec {
             table: table.clone(),
             projection: columns.clone(),
@@ -168,5 +172,17 @@ mod tests {
     fn show_tables_lowers_to_show_tables_exec() {
         let physical = lowered("SHOW TABLES", false);
         assert_eq!(physical, "ShowTablesExec");
+    }
+
+    #[test]
+    fn describe_lowers_to_describe_exec() {
+        let physical = lowered("DESCRIBE users", false);
+        assert_eq!(physical, "DescribeExec users");
+    }
+
+    #[test]
+    fn describe_extended_lowers_to_describe_exec() {
+        let physical = lowered("DESCRIBE EXTENDED users", false);
+        assert_eq!(physical, "DescribeExec users EXTENDED");
     }
 }

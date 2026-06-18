@@ -48,6 +48,12 @@ pub enum LogicalPlan {
         table: String,
     },
     ShowTables,
+    Describe {
+        table: String,
+        /// Also report the table's storage-level metadata (id, storage track,
+        /// row-group size), not just its columns.
+        extended: bool,
+    },
     Scan {
         table: String,
         /// Columns the scan must produce. `None` means all of the table's
@@ -115,6 +121,10 @@ impl LogicalPlan {
             }
             LogicalPlan::DropTable { table } => write!(f, "{pad}DropTable {table}"),
             LogicalPlan::ShowTables => write!(f, "{pad}ShowTables"),
+            LogicalPlan::Describe { table, extended } => {
+                let suffix = if *extended { " EXTENDED" } else { "" };
+                write!(f, "{pad}Describe {table}{suffix}")
+            }
             LogicalPlan::Scan { table, columns } => match columns {
                 Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
                 None => write!(f, "{pad}Scan {table}"),
