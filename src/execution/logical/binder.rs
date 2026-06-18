@@ -25,6 +25,7 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::Select(sel) => bind_select(sel, storage),
         Statement::DropTable(dt) => bind_drop_table(dt, storage),
         Statement::ShowTables => Ok(LogicalPlan::ShowTables),
+        Statement::Describe(_) => Err(Error::other("DESCRIBE not yet implemented")),
     }
 }
 

@@ -21,6 +21,7 @@ pub enum Statement {
     DropTable(DropTable),
     /// `SHOW TABLES` — list the names of every table.
     ShowTables,
+    Describe(Describe),
 }
 
 /// `CREATE TABLE name (col TYPE, ...)`.
@@ -34,6 +35,14 @@ pub struct CreateTable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropTable {
     pub table: String,
+}
+
+/// `DESCRIBE name` — inspect a table's columns. With `extended`, also report
+/// the table's storage-level metadata (id, storage track, row-group size).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Describe {
+    pub table: String,
+    pub extended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
