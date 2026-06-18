@@ -31,8 +31,9 @@ pub fn lower_statement(stmt: sql::Statement) -> Result<Statement> {
             table_name,
             ..
         } => lower_describe(describe_alias, hive_format, table_name).map(Statement::Describe),
+        sql::Statement::Delete(del) => lower_delete(del).map(Statement::Delete),
         other => Err(ParseError::unsupported(format!(
-            "only CREATE TABLE, INSERT, SELECT, DROP TABLE, SHOW TABLES and DESCRIBE are supported, not `{}`",
+            "only CREATE TABLE, INSERT, SELECT, DELETE, DROP TABLE, SHOW TABLES and DESCRIBE are supported, not `{}`",
             statement_keyword(&other)
         ))),
     }
@@ -99,6 +100,47 @@ fn lower_drop_table(
     };
     let table = single_name(name)?;
     Ok(DropTable { table })
+}
+
+// ---- DELETE ----------------------------------------------------------------
+
+fn lower_delete(del: sql::Delete) -> Result<Delete> {
+    let sql::Delete {
+        tables,
+        from,
+        using,
+        selection,
+        returning,
+        output,
+        order_by,
+        limit,
+        ..
+    } = del;
+    // Only the single-table `DELETE FROM t [WHERE ...]` form is supported.
+    if !tables.is_empty() {
+        return Err(ParseError::unsupported("multi-table DELETE"));
+    }
+    if using.is_some() {
+        return Err(ParseError::unsupported("DELETE ... USING"));
+    }
+    if returning.is_some() {
+        return Err(ParseError::unsupported("DELETE ... RETURNING"));
+    }
+    if output.is_some() {
+        return Err(ParseError::unsupported("DELETE ... OUTPUT"));
+    }
+    if !order_by.is_empty() {
+        return Err(ParseError::unsupported("DELETE ... ORDER BY"));
+    }
+    if limit.is_some() {
+        return Err(ParseError::unsupported("DELETE ... LIMIT"));
+    }
+    let relations = match from {
+        sql::FromTable::WithFromKeyword(t) | sql::FromTable::WithoutKeyword(t) => t,
+    };
+    let table = lower_from(relations)?;
+    let filter = selection.map(lower_expr).transpose()?;
+    Ok(Delete { table, filter })
 }
 
 // ---- CREATE TABLE ----------------------------------------------------------

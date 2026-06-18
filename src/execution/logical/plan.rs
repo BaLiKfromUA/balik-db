@@ -54,6 +54,13 @@ pub enum LogicalPlan {
         /// row-group size), not just its columns.
         extended: bool,
     },
+    Delete {
+        table: String,
+        /// The WHERE predicate selecting rows to remove. `None` deletes every
+        /// row in the table.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<Expr>,
+    },
     Scan {
         table: String,
         /// Columns the scan must produce. `None` means all of the table's
@@ -125,6 +132,12 @@ impl LogicalPlan {
                 let suffix = if *extended { " EXTENDED" } else { "" };
                 write!(f, "{pad}Describe {table}{suffix}")
             }
+            LogicalPlan::Delete { table, filter } => match filter {
+                Some(predicate) => {
+                    write!(f, "{pad}Delete {table} [{}]", render_expr(predicate))
+                }
+                None => write!(f, "{pad}Delete {table}"),
+            },
             LogicalPlan::Scan { table, columns } => match columns {
                 Some(cols) => write!(f, "{pad}Scan {table} [{}]", cols.join(", ")),
                 None => write!(f, "{pad}Scan {table}"),

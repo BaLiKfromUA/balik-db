@@ -423,6 +423,41 @@ mod tests {
         assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
+    // ---- DELETE ----
+
+    #[test]
+    fn delete_with_where() {
+        let stmt = parse("DELETE FROM users WHERE age > 18").unwrap();
+        let Statement::Delete(del) = stmt else {
+            panic!("expected Delete, got {stmt:?}");
+        };
+        assert_eq!(del.table, "users");
+        assert_eq!(
+            del.filter,
+            Some(Expr::Compare {
+                left: Box::new(col("age")),
+                op: CompareOp::Gt,
+                right: Box::new(int(18)),
+            })
+        );
+    }
+
+    #[test]
+    fn delete_without_where() {
+        let stmt = parse("DELETE FROM users").unwrap();
+        let Statement::Delete(del) = stmt else {
+            panic!("expected Delete, got {stmt:?}");
+        };
+        assert_eq!(del.table, "users");
+        assert!(del.filter.is_none());
+    }
+
+    #[test]
+    fn delete_with_returning_is_rejected() {
+        let err = parse("DELETE FROM users WHERE id = 1 RETURNING id").unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
     // ---- malformed input (the spec's diagnostic cases): must be Err, never panic ----
 
     #[test]

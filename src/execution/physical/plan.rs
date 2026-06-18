@@ -50,6 +50,12 @@ pub enum PhysicalPlan {
         /// row-group size) after the column rows.
         extended: bool,
     },
+    DeleteExec {
+        table: String,
+        /// The WHERE predicate selecting rows to remove. `None` deletes every
+        /// row in the table.
+        filter: Option<Expr>,
+    },
     TableScanExec {
         table: String,
         /// Columns to decode from storage, in output order. `None` means every
@@ -124,6 +130,12 @@ impl PhysicalPlan {
                 let suffix = if *extended { " EXTENDED" } else { "" };
                 write!(f, "{pad}DescribeExec {table}{suffix}")
             }
+            PhysicalPlan::DeleteExec { table, filter } => match filter {
+                Some(predicate) => {
+                    write!(f, "{pad}DeleteExec {table} [{}]", render_expr(predicate))
+                }
+                None => write!(f, "{pad}DeleteExec {table}"),
+            },
             PhysicalPlan::TableScanExec {
                 table,
                 projection,

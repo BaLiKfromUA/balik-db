@@ -17,8 +17,8 @@ use std::collections::BinaryHeap;
 use crate::catalog::schema::{Column, ColumnType, Schema};
 use crate::catalog::tables::TableOptions;
 use crate::error::Error;
-use crate::parser::ast::{ColumnDef, DataType, Literal};
-use crate::storage::{ColumnBatch, Record, Storage, Value};
+use crate::parser::ast::{ColumnDef, DataType, Expr, Literal};
+use crate::storage::{ColumnBatch, Record, Rid, Storage, Value};
 
 use super::BatchStream;
 use super::expr;
@@ -36,6 +36,7 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::DropTableExec { table } => exec_drop_table(table, store),
         PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
         PhysicalPlan::DescribeExec { table, extended } => exec_describe(table, *extended, &*store),
+        PhysicalPlan::DeleteExec { table, filter } => exec_delete(table, filter, store),
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -127,7 +128,8 @@ pub(super) fn execute_stream<'a>(
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
-        | PhysicalPlan::DescribeExec { .. } => Err(Error::other(
+        | PhysicalPlan::DescribeExec { .. }
+        | PhysicalPlan::DeleteExec { .. } => Err(Error::other(
             "DDL/DML operator cannot appear inside a query pipeline",
         )),
     }
@@ -159,7 +161,8 @@ fn output_columns(plan: &PhysicalPlan) -> Result<Vec<String>, Error> {
         | PhysicalPlan::InsertExec { .. }
         | PhysicalPlan::DropTableExec { .. }
         | PhysicalPlan::ShowTablesExec
-        | PhysicalPlan::DescribeExec { .. } => {
+        | PhysicalPlan::DescribeExec { .. }
+        | PhysicalPlan::DeleteExec { .. } => {
             Err(Error::other("statement produces no row output"))
         }
     }
@@ -213,6 +216,57 @@ fn exec_insert(
         "Inserted into '{table}' as rid {}",
         rid.0
     )))
+}
+
+/// Run a DELETE: scan the table for live rows, keep the rids whose row passes
+/// the optional WHERE predicate (every row when there is none), then tombstone
+/// each one. The rids are collected before any deletion because the scan holds a
+/// shared borrow of storage while deletion needs an exclusive one. Storage
+/// persists the tombstones, so the removal survives a restart.
+fn exec_delete(
+    table: &str,
+    filter: &Option<Expr>,
+    store: &mut dyn Storage,
+) -> Result<QueryResult, Error> {
+    let handle = store.open_table(table)?;
+    let names: Vec<String> = handle
+        .schema
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    let mut victims: Vec<Rid> = Vec::new();
+    for row in store.scan(&handle)? {
+        let (rid, record) = row?;
+        let matched = match filter {
+            None => true,
+            Some(predicate) => {
+                let batch = single_row_batch(&names, &record);
+                expr::evaluate_predicate(predicate, &batch)?[0]
+            }
+        };
+        if matched {
+            victims.push(rid);
+        }
+    }
+
+    let deleted = victims.len();
+    for rid in victims {
+        store.delete(&handle, rid)?;
+    }
+    Ok(QueryResult::Affected(format!(
+        "Deleted {deleted} row(s) from '{table}'"
+    )))
+}
+
+/// Wrap one record as a single-row column-major batch keyed by `names`, so the
+/// vectorized predicate evaluator can score it like any scanned batch.
+fn single_row_batch(names: &[String], record: &Record) -> ColumnBatch {
+    ColumnBatch {
+        names: names.to_vec(),
+        columns: record.values.iter().map(|v| vec![v.clone()]).collect(),
+    }
 }
 
 /// Run a DROP TABLE: remove the table from the catalog and delete its on-disk
@@ -1267,6 +1321,70 @@ mod tests {
         let scan = scan_t(Some(vec!["id".into()]), vec![]);
         let plan = topk("label", false, 1, scan);
         assert!(execute_stream(&plan, &store).is_err());
+    }
+
+    fn delete(filter: Option<Expr>) -> PhysicalPlan {
+        PhysicalPlan::DeleteExec {
+            table: "t".into(),
+            filter,
+        }
+    }
+
+    /// The sorted ids still live in table `t` after a mutation.
+    fn remaining_ids(store: &dyn Storage) -> Vec<i64> {
+        let handle = store.open_table("t").unwrap();
+        let mut ids: Vec<i64> = store
+            .scan(&handle)
+            .unwrap()
+            .map(|r| match r.unwrap().1.values[0] {
+                Value::Int(n) => n,
+                ref other => panic!("expected int id, got {other:?}"),
+            })
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn delete_exec_with_where_removes_only_matching_rows() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3, 4]);
+        let plan = delete(Some(id_cmp(CompareOp::LtEq, 2)));
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 2 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), vec![3, 4]);
+    }
+
+    #[test]
+    fn delete_exec_without_where_empties_the_table() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3]);
+        let QueryResult::Affected(msg) = execute(&delete(None), &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 3 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn delete_exec_no_match_removes_nothing() {
+        let (_tmp, mut store) = store_with_groups(&[1, 2, 3]);
+        let plan = delete(Some(id_cmp(CompareOp::Gt, 100)));
+        let QueryResult::Affected(msg) = execute(&plan, &mut store).unwrap() else {
+            panic!("expected Affected");
+        };
+        assert!(msg.contains("Deleted 0 row(s)"), "{msg}");
+        assert_eq!(remaining_ids(&store), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn delete_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::DeleteExec {
+            table: "ghosts".into(),
+            filter: None,
+        };
+        assert!(execute(&plan, &mut store).is_err());
     }
 
     #[test]

@@ -26,7 +26,30 @@ pub fn bind(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Erro
         Statement::DropTable(dt) => bind_drop_table(dt, storage),
         Statement::ShowTables => Ok(LogicalPlan::ShowTables),
         Statement::Describe(d) => bind_describe(d, storage),
+        Statement::Delete(del) => bind_delete(del, storage),
     }
+}
+
+fn bind_delete(del: &ast::Delete, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
+    let desc = storage.describe_table(&del.table)?;
+    // Validate any columns the WHERE clause references against the table.
+    if let Some(filter) = &del.filter {
+        let known: HashSet<&str> = desc
+            .schema
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        let mut referenced = Vec::new();
+        collect_expr_columns(filter, &mut referenced);
+        for name in &referenced {
+            ensure_column_exists(&known, name, &del.table, "WHERE")?;
+        }
+    }
+    Ok(LogicalPlan::Delete {
+        table: del.table.clone(),
+        filter: del.filter.clone(),
+    })
 }
 
 fn bind_describe(d: &ast::Describe, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
@@ -300,6 +323,38 @@ mod tests {
         let (_tmp, store) = seeded_store();
         let err = plan_of("DROP TABLE ghosts", &store).unwrap_err();
         assert!(err.to_string().contains("no such table"), "{err}");
+    }
+
+    #[test]
+    fn delete_with_where_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("DELETE FROM users WHERE age > 18", &store).unwrap();
+        assert_eq!(plan.to_string(), "Delete users [age > 18]");
+    }
+
+    #[test]
+    fn delete_without_where_builds_plan() {
+        let (_tmp, store) = seeded_store();
+        let plan = plan_of("DELETE FROM users", &store).unwrap();
+        assert_eq!(plan.to_string(), "Delete users");
+    }
+
+    #[test]
+    fn delete_rejects_unknown_table() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("DELETE FROM ghosts WHERE id = 1", &store).unwrap_err();
+        assert!(err.to_string().contains("no such table"), "{err}");
+    }
+
+    #[test]
+    fn delete_rejects_unknown_where_column() {
+        let (_tmp, store) = seeded_store();
+        let err = plan_of("DELETE FROM users WHERE nope = 1", &store).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("WHERE references unknown column 'nope'"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -44,6 +44,10 @@ fn lower_node(plan: &LogicalPlan, prune: &[ScanPredicate]) -> PhysicalPlan {
             table: table.clone(),
             extended: *extended,
         },
+        LogicalPlan::Delete { table, filter } => PhysicalPlan::DeleteExec {
+            table: table.clone(),
+            filter: filter.clone(),
+        },
         LogicalPlan::Scan { table, columns } => PhysicalPlan::TableScanExec {
             table: table.clone(),
             projection: columns.clone(),
@@ -166,6 +170,18 @@ mod tests {
     fn drop_table_lowers_to_drop_table_exec() {
         let physical = lowered("DROP TABLE users", false);
         assert_eq!(physical, "DropTableExec users");
+    }
+
+    #[test]
+    fn delete_with_where_lowers_to_delete_exec() {
+        let physical = lowered("DELETE FROM users WHERE age > 18", false);
+        assert_eq!(physical, "DeleteExec users [age > 18]");
+    }
+
+    #[test]
+    fn delete_without_where_lowers_to_delete_exec() {
+        let physical = lowered("DELETE FROM users", false);
+        assert_eq!(physical, "DeleteExec users");
     }
 
     #[test]

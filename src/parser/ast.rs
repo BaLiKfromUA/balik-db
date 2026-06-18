@@ -22,6 +22,7 @@ pub enum Statement {
     /// `SHOW TABLES` — list the names of every table.
     ShowTables,
     Describe(Describe),
+    Delete(Delete),
 }
 
 /// `CREATE TABLE name (col TYPE, ...)`.
@@ -68,6 +69,14 @@ pub enum DataType {
 pub struct Insert {
     pub table: String,
     pub values: Vec<Literal>,
+}
+
+/// `DELETE FROM name [WHERE filter]` — remove the rows matching `filter`, or
+/// every row when there is no `WHERE`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Delete {
+    pub table: String,
+    pub filter: Option<Expr>,
 }
 
 /// A literal value appearing in an INSERT row or a WHERE comparison.
