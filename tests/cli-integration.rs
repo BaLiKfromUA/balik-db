@@ -184,7 +184,11 @@ fn describe_shows_columns() {
 #[test]
 fn describe_extended_shows_storage_metadata() {
     let (_tmp, db) = init_db();
-    run_query(&db, "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)").success();
+    run_query(
+        &db,
+        "CREATE TABLE users (id INT NOT NULL, name TEXT NOT NULL)",
+    )
+    .success();
 
     run_query(&db, "DESCRIBE EXTENDED users")
         .success()

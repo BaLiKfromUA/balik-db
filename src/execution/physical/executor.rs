@@ -35,9 +35,7 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::InsertExec { table, values } => exec_insert(table, values, store),
         PhysicalPlan::DropTableExec { table } => exec_drop_table(table, store),
         PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
-        PhysicalPlan::DescribeExec { table, extended } => {
-            exec_describe(table, *extended, &*store)
-        }
+        PhysicalPlan::DescribeExec { table, extended } => exec_describe(table, *extended, &*store),
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
