@@ -35,6 +35,9 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
         PhysicalPlan::InsertExec { table, values } => exec_insert(table, values, store),
         PhysicalPlan::DropTableExec { table } => exec_drop_table(table, store),
         PhysicalPlan::ShowTablesExec => exec_show_tables(&*store),
+        PhysicalPlan::DescribeExec { table, extended } => {
+            exec_describe(table, *extended, &*store)
+        }
         _ => {
             let names = output_columns(plan)?;
             let stream = execute_stream(plan, &*store)?;
@@ -231,6 +234,49 @@ fn exec_show_tables(store: &dyn Storage) -> Result<QueryResult, Error> {
         .collect();
     Ok(QueryResult::Rows {
         names: vec!["table_name".to_string()],
+        rows,
+    })
+}
+
+/// Run a DESCRIBE: one row per column in declared order, reporting name, type,
+/// and nullability. With `extended`, append the table's storage-level metadata
+/// (id, storage track, row-group size) as trailing rows, each tagged in the
+/// `column_name` field with a leading `#`.
+fn exec_describe(table: &str, extended: bool, store: &dyn Storage) -> Result<QueryResult, Error> {
+    let desc = store.describe_table(table)?;
+    let mut rows: Vec<Vec<Value>> = desc
+        .schema
+        .columns
+        .iter()
+        .map(|col| {
+            let nullable = if col.nullable { "YES" } else { "NO" };
+            vec![
+                Value::Text(col.name.clone()),
+                Value::Text(col.ty.as_str().to_string()),
+                Value::Text(nullable.to_string()),
+            ]
+        })
+        .collect();
+    if extended {
+        let meta = [
+            ("# table_id", desc.id.to_string()),
+            ("# storage", desc.storage_track.clone()),
+            ("# row_group_size", desc.row_group_size.to_string()),
+        ];
+        rows.extend(meta.into_iter().map(|(name, value)| {
+            vec![
+                Value::Text(name.to_string()),
+                Value::Text(value),
+                Value::Text(String::new()),
+            ]
+        }));
+    }
+    Ok(QueryResult::Rows {
+        names: vec![
+            "column_name".to_string(),
+            "type".to_string(),
+            "nullable".to_string(),
+        ],
         rows,
     })
 }
@@ -648,6 +694,84 @@ mod tests {
                 rows: vec![],
             }
         );
+    }
+
+    #[test]
+    fn describe_exec_lists_columns_in_declared_order() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::DescribeExec {
+            table: "users".into(),
+            extended: false,
+        };
+        let result = execute(&plan, &mut store).unwrap();
+        assert_eq!(
+            result,
+            QueryResult::Rows {
+                names: vec!["column_name".into(), "type".into(), "nullable".into()],
+                rows: vec![
+                    vec![
+                        Value::Text("id".into()),
+                        Value::Text("INT".into()),
+                        Value::Text("NO".into()),
+                    ],
+                    vec![
+                        Value::Text("name".into()),
+                        Value::Text("TEXT".into()),
+                        Value::Text("YES".into()),
+                    ],
+                    vec![
+                        Value::Text("age".into()),
+                        Value::Text("INT".into()),
+                        Value::Text("YES".into()),
+                    ],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn describe_exec_extended_appends_table_metadata() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let table_id = store.describe_table("users").unwrap().id.to_string();
+        let plan = PhysicalPlan::DescribeExec {
+            table: "users".into(),
+            extended: true,
+        };
+        let QueryResult::Rows { rows, .. } = execute(&plan, &mut store).unwrap() else {
+            panic!("expected rows");
+        };
+        // Three column rows, then three storage-metadata rows.
+        assert_eq!(rows.len(), 6);
+        assert_eq!(
+            &rows[3..],
+            &[
+                vec![
+                    Value::Text("# table_id".into()),
+                    Value::Text(table_id),
+                    Value::Text(String::new()),
+                ],
+                vec![
+                    Value::Text("# storage".into()),
+                    Value::Text("column-store".into()),
+                    Value::Text(String::new()),
+                ],
+                vec![
+                    Value::Text("# row_group_size".into()),
+                    Value::Text("8192".into()),
+                    Value::Text(String::new()),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn describe_exec_rejects_unknown_table() {
+        let (_tmp, mut store) = crate::execution::test_support::seeded_store();
+        let plan = PhysicalPlan::DescribeExec {
+            table: "ghosts".into(),
+            extended: false,
+        };
+        assert!(execute(&plan, &mut store).is_err());
     }
 
     fn insert(table: &str, values: Vec<Literal>) -> PhysicalPlan {
