@@ -54,6 +54,27 @@ pub enum Command {
         optimize: bool,
     },
 
+    /// Generate a wide-row table of deterministic random data for benchmarking
+    /// the logical optimizer. Development utility, hidden from normal help.
+    #[command(hide = true)]
+    BenchGen {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// Name of the table to (re)create and load.
+        #[arg(long, default_value = "bench")]
+        table: String,
+        /// Approximate target size, e.g. `1GB` or `500MiB`. Ignored if `--rows`
+        /// is given.
+        #[arg(long, default_value = "1GB")]
+        size: String,
+        /// Exact number of rows to generate, overriding `--size`.
+        #[arg(long)]
+        rows: Option<u64>,
+        /// Seed for the deterministic data generator.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+    },
+
     Doctor {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,

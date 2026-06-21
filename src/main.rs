@@ -35,6 +35,13 @@ fn main() -> ExitCode {
             sql,
             optimize,
         } => cli::commands::explain::run(&path, &sql, optimize),
+        cli::Command::BenchGen {
+            path,
+            table,
+            size,
+            rows,
+            seed,
+        } => cli::commands::bench_gen::run(&path, &table, &size, rows, seed).map_err(Into::into),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
     };
