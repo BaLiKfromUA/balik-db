@@ -271,10 +271,18 @@ ProjectionExec [id]
       TableScanExec users [id, age] prune=[age > 18]
 ```
 
-The `query` command runs the whole pipeline and prints the result:
+The `query` command runs the pipeline end to end and prints the result:
 
 ```bash
 ./balik-cli query --db ./demo-db --sql "SELECT id, name FROM users WHERE age >= 18 ORDER BY name LIMIT 10"
+```
+
+Like `explain`, `query` skips the logical rewrites by default; add `--optimize`
+to apply column pushdown and `ORDER BY` + `LIMIT` fusion before execution. The
+result is identical either way — the flag only changes the plan that runs:
+
+```bash
+./balik-cli query --db ./demo-db --optimize --sql "SELECT id, name FROM users WHERE age >= 18 ORDER BY name LIMIT 10"
 ```
 
 Parse or planning errors go to stderr with a non-zero exit code. See

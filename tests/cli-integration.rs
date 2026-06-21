@@ -594,6 +594,13 @@ fn run_query(db: impl AsRef<std::path::Path>, sql: &str) -> assert_cmd::assert::
         .assert()
 }
 
+fn run_query_optimized(db: impl AsRef<std::path::Path>, sql: &str) -> assert_cmd::assert::Assert {
+    balik_cli()
+        .args(["query", "--db", db.as_ref().to_str().unwrap(), "--sql", sql])
+        .arg("--optimize")
+        .assert()
+}
+
 #[test]
 fn query_runs_create_insert_select_pipeline() {
     let (_tmp, db) = init_db();
@@ -619,6 +626,26 @@ fn query_runs_create_insert_select_pipeline() {
         stdout.find("Alice") < stdout.find("Carol"),
         "rows not in name order:\n{stdout}"
     );
+}
+
+#[test]
+fn query_optimized_returns_same_results() {
+    let (_tmp, db) = init_db();
+    run_query(&db, "CREATE TABLE users (id INT, name TEXT, age INT)").success();
+    run_query(&db, "INSERT INTO users VALUES (1, 'Alice', 20)").success();
+    run_query(&db, "INSERT INTO users VALUES (2, 'Bob', 15)").success();
+    run_query(&db, "INSERT INTO users VALUES (3, 'Carol', 30)").success();
+
+    // --optimize runs ORDER BY + LIMIT fusion and column pushdown, but the
+    // result the user sees is identical to the unoptimized pipeline.
+    run_query_optimized(
+        &db,
+        "SELECT id, name FROM users WHERE age >= 18 ORDER BY name LIMIT 10",
+    )
+    .success()
+    .stdout(predicate::str::contains("Alice"))
+    .stdout(predicate::str::contains("Carol"))
+    .stdout(predicate::str::contains("Bob").not());
 }
 
 #[test]
