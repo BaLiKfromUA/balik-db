@@ -70,6 +70,10 @@ echo "Generated table:"
 "$BIN" query --db "$DB_DIR" --sql "DESCRIBE EXTENDED bench"
 echo
 
+echo "Sample rows:"
+"$BIN" query --db "$DB_DIR" --sql "SELECT id, sort_key, filter_a, filter_b, payload1 FROM bench LIMIT 5"
+echo
+
 echo "Query:"
 echo "$QUERY"
 echo
