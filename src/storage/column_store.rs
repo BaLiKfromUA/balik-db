@@ -287,7 +287,12 @@ impl ColumnStore {
 
             for (i, col) in table.schema.columns.iter().enumerate() {
                 let values: Vec<Value> = chunk.iter().map(|r| r.values[i].clone()).collect();
-                column_file::write_column(&col_path(&rg_dir, &col.name), col.ty, &values, &deletes)?;
+                column_file::write_column(
+                    &col_path(&rg_dir, &col.name),
+                    col.ty,
+                    &values,
+                    &deletes,
+                )?;
             }
         }
 
@@ -1553,7 +1558,8 @@ mod tests {
         // Two boundary-aligned calls (each a full group of 2) then a final
         // short call, streaming the load instead of buffering all of it.
         let mk = |ids: std::ops::Range<i64>| -> Vec<Record> {
-            ids.map(|i| record(vec![Value::Int(i), Value::Null])).collect()
+            ids.map(|i| record(vec![Value::Int(i), Value::Null]))
+                .collect()
         };
         store.bulk_load(&h, &mk(0..2)).unwrap();
         store.bulk_load(&h, &mk(2..4)).unwrap();
