@@ -10,8 +10,8 @@ SQL text ──parser──▶ AST ──planner──▶ LogicalPlan ──opti
 
 Optimization is a pure `LogicalPlan → LogicalPlan` transformation. It reads no
 row data and no catalog — every rule is derivable from the plan tree itself.
-Building a plan never optimizes it; the rewrite runs only when asked for (the
-`explain --optimize` flag), while `query` always optimizes before executing.
+Building a plan never optimizes it; the rewrite runs only when asked for — both
+`query` and `explain` take an `--optimize` flag and skip the rewrites without it.
 
 ## Where it lives
 

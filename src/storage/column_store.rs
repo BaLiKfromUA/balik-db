@@ -243,6 +243,64 @@ impl ColumnStore {
         }
         Ok(())
     }
+
+    /// Append records to a table, writing each column file once per row group
+    /// rather than once per row.
+    ///
+    /// `insert` rewrites every column file on each call, so filling a row group
+    /// of size `R` costs `O(R²)` write traffic. This path encodes each column
+    /// once per group, making a load of `N` rows `O(N)` — the difference between
+    /// gigabytes and terabytes of I/O when generating large datasets.
+    ///
+    /// It appends starting from the table's current `next_rid`, which must sit on
+    /// a row-group boundary, so a large load can be streamed as a sequence of
+    /// row-group-sized calls to bound peak memory. (Pass chunks whose length is a
+    /// multiple of `row_group_size`, except optionally the final call, to keep
+    /// every call boundary-aligned.) It is a bulk loader, not a general write
+    /// path: it ignores deletes and is not crash-atomic across groups, so it is
+    /// meant for loading into a freshly created table.
+    pub fn bulk_load(&mut self, table: &TableHandle, records: &[Record]) -> Result<(), Error> {
+        for record in records {
+            validate_record(&table.schema, record)?;
+        }
+
+        let rgs = u64::from(table.row_group_size);
+        let start_rid = self.catalog.describe_table(&table.name)?.next_rid;
+        if start_rid % rgs != 0 {
+            return Err(Error::other(format!(
+                "bulk_load must start on a row-group boundary, but next_rid is {start_rid}"
+            )));
+        }
+        let start_group = (start_rid / rgs) as u32;
+
+        for (chunk_index, chunk) in records.chunks(rgs as usize).enumerate() {
+            let group = start_group + chunk_index as u32;
+            let rg_dir = row_group_dir(&table.dir, group);
+            // Group 0 is materialized at create time; later groups open here.
+            if group > 0 {
+                materialize_row_group(&rg_dir, &table.schema.columns, table.row_group_size)?;
+            }
+
+            // A freshly loaded group has no tombstones, but the encoder still
+            // wants the bitmap to derive INT min/max over live rows only.
+            let (_, deletes) = delete_bitmap::load(&rg_dir.join(delete_bitmap::FILE_NAME))?;
+
+            for (i, col) in table.schema.columns.iter().enumerate() {
+                let values: Vec<Value> = chunk.iter().map(|r| r.values[i].clone()).collect();
+                column_file::write_column(
+                    &col_path(&rg_dir, &col.name),
+                    col.ty,
+                    &values,
+                    &deletes,
+                )?;
+            }
+        }
+
+        self.catalog
+            .set_next_rid(&table.name, start_rid + records.len() as u64)?;
+        tracing::debug!(table = %table.name, rows = records.len(), "bulk-loaded rows");
+        Ok(())
+    }
 }
 
 impl Storage for ColumnStore {
@@ -1439,6 +1497,133 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    #[test]
+    fn bulk_load_spans_row_groups_and_scans_back_in_order() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "users",
+                schema_users(),
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+
+        // rgs=2 with 5 rows -> groups [0,1], [2,3], [4]; the last group is
+        // partially filled, exercising the short final chunk.
+        let records: Vec<Record> = (0..5)
+            .map(|i| record(vec![Value::Int(i), Value::Text(format!("name{i}"))]))
+            .collect();
+        store.bulk_load(&h, &records).unwrap();
+
+        // next_rid lands at the row count, so point reads see every row...
+        assert_eq!(store.describe_table("users").unwrap().next_rid, 5);
+        for i in 0..5 {
+            let got = store.get(&h, Rid(i)).unwrap().unwrap();
+            assert_eq!(got.values[0], Value::Int(i as i64));
+        }
+
+        // ...and a scan returns all rows across all three groups in rid order.
+        let rows: Vec<Value> = collect_batches(&store, &h, Some(&["id".to_string()]), &[])
+            .into_iter()
+            .flat_map(|b| b.columns[0].clone())
+            .collect();
+        assert_eq!(
+            rows,
+            (0..5).map(Value::Int).collect::<Vec<_>>(),
+            "every bulk-loaded row scanned back in order"
+        );
+    }
+
+    #[test]
+    fn bulk_load_appends_across_row_group_aligned_calls() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "users",
+                schema_users(),
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+
+        // Two boundary-aligned calls (each a full group of 2) then a final
+        // short call, streaming the load instead of buffering all of it.
+        let mk = |ids: std::ops::Range<i64>| -> Vec<Record> {
+            ids.map(|i| record(vec![Value::Int(i), Value::Null]))
+                .collect()
+        };
+        store.bulk_load(&h, &mk(0..2)).unwrap();
+        store.bulk_load(&h, &mk(2..4)).unwrap();
+        store.bulk_load(&h, &mk(4..5)).unwrap();
+
+        assert_eq!(store.describe_table("users").unwrap().next_rid, 5);
+        let rows: Vec<Value> = collect_batches(&store, &h, Some(&["id".to_string()]), &[])
+            .into_iter()
+            .flat_map(|b| b.columns[0].clone())
+            .collect();
+        assert_eq!(rows, (0..5).map(Value::Int).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bulk_load_rejects_unaligned_start() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table(
+                "users",
+                schema_users(),
+                TableOptions {
+                    row_group_size: Some(2),
+                },
+            )
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+
+        // A short first call leaves next_rid mid-group (1 % 2 != 0), so the
+        // next bulk_load can't land on a clean group boundary.
+        store
+            .bulk_load(&h, &[record(vec![Value::Int(0), Value::Null])])
+            .unwrap();
+        let err = store
+            .bulk_load(&h, &[record(vec![Value::Int(1), Value::Null])])
+            .unwrap_err();
+        assert!(err.to_string().contains("row-group boundary"));
+    }
+
+    #[test]
+    fn insert_after_bulk_load_appends_at_next_rid() {
+        let (_tmp, db) = init_db();
+        let mut store = ColumnStore::open(&db).unwrap();
+        store
+            .create_table("users", schema_users(), TableOptions::default())
+            .unwrap();
+        let h = store.open_table("users").unwrap();
+
+        let records: Vec<Record> = (0..3)
+            .map(|i| record(vec![Value::Int(i), Value::Null]))
+            .collect();
+        store.bulk_load(&h, &records).unwrap();
+
+        // A normal insert after a bulk load continues from the committed
+        // next_rid rather than overwriting row 0.
+        let rid = store
+            .insert(&h, record(vec![Value::Int(99), Value::Text("late".into())]))
+            .unwrap();
+        assert_eq!(rid, Rid(3));
+        assert_eq!(store.describe_table("users").unwrap().next_rid, 4);
+        assert_eq!(
+            store.get(&h, Rid(3)).unwrap().unwrap().values[1],
+            Value::Text("late".into())
+        );
     }
 
     #[test]

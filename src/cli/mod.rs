@@ -24,15 +24,19 @@ pub enum Command {
         query: String,
     },
 
-    /// Execute a SQL statement end to end and print its result. Runs the full
-    /// pipeline (parse, plan, optimize, lower, execute) against storage; exits
-    /// non-zero with a message on stderr on any error.
+    /// Execute a SQL statement end to end and print its result. Runs the
+    /// pipeline (parse, plan, lower, execute) against storage, applying logical
+    /// optimizations only with `--optimize`; exits non-zero with a message on
+    /// stderr on any error.
     Query {
         #[arg(long = "db", default_value = "./balik_db")]
         path: PathBuf,
         /// The SQL statement to execute, as a single string.
         #[arg(long)]
         sql: String,
+        /// Apply logical optimizations before lowering and execution.
+        #[arg(long)]
+        optimize: bool,
     },
 
     /// Print the logical and physical plans for a SQL query without running it.
@@ -48,6 +52,27 @@ pub enum Command {
         /// executes.
         #[arg(long)]
         optimize: bool,
+    },
+
+    /// Generate a wide-row table of deterministic random data for benchmarking
+    /// the logical optimizer. Development utility, hidden from normal help.
+    #[command(hide = true)]
+    BenchGen {
+        #[arg(long = "db", default_value = "./balik_db")]
+        path: PathBuf,
+        /// Name of the table to (re)create and load.
+        #[arg(long, default_value = "bench")]
+        table: String,
+        /// Approximate target size, e.g. `1GB` or `500MiB`. Ignored if `--rows`
+        /// is given.
+        #[arg(long, default_value = "1GB")]
+        size: String,
+        /// Exact number of rows to generate, overriding `--size`.
+        #[arg(long)]
+        rows: Option<u64>,
+        /// Seed for the deterministic data generator.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
 
     Doctor {

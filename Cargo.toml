@@ -9,8 +9,10 @@ name = "balik-cli"
 path = "src/main.rs"
 
 [dependencies]
+bytesize = "2.4.0"
 clap = { version = "4.6.0", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", features = ["tracing"] }
+fastrand = "2.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlparser = "0.62.0"

@@ -25,12 +25,23 @@ fn main() -> ExitCode {
 
     let result: Result<(), Box<dyn std::error::Error>> = match args.command {
         cli::Command::Parse { query } => cli::commands::parse::run(&query).map_err(Into::into),
-        cli::Command::Query { path, sql } => cli::commands::query::run(&path, &sql),
+        cli::Command::Query {
+            path,
+            sql,
+            optimize,
+        } => cli::commands::query::run(&path, &sql, optimize),
         cli::Command::Explain {
             path,
             sql,
             optimize,
         } => cli::commands::explain::run(&path, &sql, optimize),
+        cli::Command::BenchGen {
+            path,
+            table,
+            size,
+            rows,
+            seed,
+        } => cli::commands::bench_gen::run(&path, &table, &size, rows, seed).map_err(Into::into),
         cli::Command::Doctor { path } => cli::commands::doctor::run(&path).map_err(Into::into),
         cli::Command::Init { path } => cli::commands::init::run(&path).map_err(Into::into),
     };
