@@ -24,3 +24,11 @@ tracing-subscriber = "0.3.23"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+# Single source of truth for the lint bar: every `cargo build` / `cargo clippy`
+# invocation (local and CI) denies warnings, so nothing slips through until push.
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
