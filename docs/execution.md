@@ -102,7 +102,8 @@ A statement produces a `QueryResult`:
 
 - `Rows { names, rows }` for `SELECT`, `SHOW TABLES`, and `DESCRIBE`, rendered as
   a simple aligned text table.
-- `Affected(message)` for `CREATE TABLE` / `INSERT` / `DROP TABLE`.
+- `Affected(message)` for `CREATE TABLE` / `INSERT` / `UPDATE` / `DELETE` /
+  `DROP TABLE`.
 
 The output column names are derived from the plan shape (a projection fixes them;
 the row-shaping operators below it defer to their input), so an empty result still

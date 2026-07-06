@@ -289,6 +289,20 @@ Parse or planning errors go to stderr with a non-zero exit code. See
 [docs/logical-planning.md](docs/logical-planning.md) for the operator set,
 [docs/logical-optimization.md](docs/logical-optimization.md) for the rewrites,
 and [docs/execution.md](docs/execution.md) for how the physical operators run.
+For how the storage engine lays out data on disk, see
+[docs/storage-design.md](docs/storage-design.md) and
+[docs/storage-optimizations.md](docs/storage-optimizations.md).
+
+## Benchmarks
+
+[`scripts/bench_optimize.sh`](scripts/bench_optimize.sh) measures the impact of
+logical optimization: it generates a wide-row dataset once (via the hidden
+`bench-gen` command), then times the same `SELECT ... WHERE ... ORDER BY ...
+LIMIT` query with and without `--optimize`. See
+[docs/benchmarks.md](docs/benchmarks.md) for how to run it and
+[docs/bench_results_linux_june_26.md](docs/bench_results_linux_june_26.md) /
+[docs/bench_results_macOS_june_26.md](docs/bench_results_macOS_june_26.md) for
+sample results.
 
 ## Logging
 
@@ -335,9 +349,10 @@ src/
       parse.rs         // parse a SQL query and print its AST
       explain.rs       // print a query's logical and physical plans
       query.rs         // run a SQL query end to end and print the result
+      bench_gen.rs     // hidden dev command: generate wide-row benchmark data
       doctor.rs        // diagnostic command
       init.rs          // initialize a new database directory
-  storage/             // storage trait + column-store implementation
+  storage/             // storage trait + column-store implementation (see docs/storage-design.md, docs/storage-optimizations.md)
     mod.rs             // Storage trait, Rid, TableHandle, Record, Value
     column_store.rs    // column-store implementation: insert / get / scan / update / delete
     column_file.rs     // .col header + INT raw / TEXT raw-or-dict data encoding
@@ -368,6 +383,9 @@ src/
       result.rs        // QueryResult collection + table rendering
 tests/
   cli-integration.rs   // end-to-end tests driving the `balik-cli` binary
+scripts/
+  bench_optimize.sh    // time the same query with and without --optimize
+docs/                  // design notes and benchmark results
 ```
 
 Unit tests live next to the code they cover (inside `#[cfg(test)] mod tests` blocks); integration tests under `tests/` exercise the compiled binary via `assert_cmd`.

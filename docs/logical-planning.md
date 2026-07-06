@@ -42,6 +42,7 @@ mismatches surface as `InvalidQuery`; an ill-formed CREATE TABLE surfaces as
 | `Delete`      | remove matching rows, or all rows (standalone root) |
 | `DropTable`   | remove a table (standalone root)                   |
 | `ShowTables`  | list table names (standalone root)                 |
+| `Describe`    | list a table's columns, +storage metadata (root)   |
 | `Scan`        | read a table — always the leaf of a SELECT tree    |
 | `Filter`      | keep rows matching a WHERE predicate               |
 | `Projection`  | choose / order output columns                      |

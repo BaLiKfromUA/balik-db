@@ -11,7 +11,7 @@ The base format reserves bytes for these features (`physical_encoding` tag,
 
 | Optimization | Status | Reader/consumer |
 |---|---|---|
-| [INT min/max stats](#int-minmax-header-stats) | implemented | future skip-pruning |
+| [INT min/max stats](#int-minmax-header-stats) | implemented | scan row-group pruning |
 | [Dictionary encoding for TEXT](#dictionary-encoding-for-text) | implemented | scan + equality filter |
 
 ---
@@ -20,10 +20,10 @@ The base format reserves bytes for these features (`physical_encoding` tag,
 
 The 16-byte `min` and `max` slots in each `.col` header (offsets `24` and
 `40` — see `.col` layout in [`storage-design.md`](storage-design.md)) carry
-the smallest and largest **live** values for INT columns. They exist as a
-prerequisite for skip-pruning: a query like `WHERE id BETWEEN 100 AND 200`
-can skip an entire row group whose stored `[min, max]` doesn't overlap the
-filter.
+the smallest and largest **live** values for INT columns. They back
+scan-time row-group pruning: a query like `WHERE id BETWEEN 100 AND 200`
+skips an entire row group whose stored `[min, max]` doesn't overlap the
+filter (see [Consumer](#consumer)).
 
 ### Slot layout
 
@@ -82,10 +82,14 @@ after delete" caveat to remember.
 
 ### Consumer
 
-No reader currently filters on `int_min` / `int_max`; they're stamped today
-so future skip-pruning has stats reaching back to the first write of every
-row group. Adding stats later would force a backfill rewrite of every
-existing column file.
+`TableScanExec` prunes on these stats: for each row group, `group_pruned`
+(`src/storage/column_store.rs`) tests every conjunctive `column <op> integer`
+hint from the WHERE clause against the column's `int_min` / `int_max` and
+skips the whole group when no live row can match. Because the stats are
+stamped from the first write of every row group, pruning works without any
+backfill — adding them later would have forced a rewrite of every existing
+column file. See [execution.md](execution.md#row-group-skipping-at-the-scan)
+for how the hints are extracted and pushed into the scan.
 
 ---
 
@@ -180,7 +184,7 @@ cardinality changes across the column-file's lifetime.
 - **TEXT only.** Dictionary encoding is the **sole** compression scheme in
   the engine, and it applies **only to TEXT** columns. INT columns are always
   stored as raw little-endian `i64`s (`physical_encoding = 0`) — they carry
-  [min/max stats](#int-minmax-header-stats) for future skip-pruning, but their
-  values are never compressed. Numeric compression (delta, frame-of-reference,
+  [min/max stats](#int-minmax-header-stats) that drive scan row-group pruning,
+  but their values are never compressed. Numeric compression (delta, frame-of-reference,
   bit-packing) is a separate, unplanned encoding; the `physical_encoding` byte
   has room for it without a `format_version` bump when it lands.
