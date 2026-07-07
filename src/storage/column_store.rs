@@ -540,6 +540,12 @@ impl Storage for ColumnStore {
 
         // Snapshot `next_rid` once so a concurrent insert can't widen the scan.
         let total_rows = self.catalog.describe_table(&table.name)?.next_rid;
+        tracing::debug!(
+            table = %table.name,
+            projection = ?projected,
+            prune = prune.len(),
+            "starting scan"
+        );
         Ok(Box::new(BatchScanState {
             table_dir: table.dir.clone(),
             projected,
@@ -548,6 +554,9 @@ impl Storage for ColumnStore {
             total_rows,
             current_group: 0,
             errored: false,
+            pruned_groups: 0,
+            scanned_groups: 0,
+            summarized: false,
         }))
     }
 }
@@ -563,6 +572,13 @@ struct BatchScanState {
     total_rows: u64,
     current_group: u32,
     errored: bool,
+    /// Row groups skipped wholesale via the zone maps, and those actually
+    /// decoded — counted for the scan-completion summary log.
+    pruned_groups: u32,
+    scanned_groups: u32,
+    /// Guards the one-shot completion summary so re-polling an exhausted scan
+    /// doesn't log it again.
+    summarized: bool,
 }
 
 impl BatchScanState {
@@ -572,14 +588,24 @@ impl BatchScanState {
         loop {
             let first_rid_of_group = u64::from(self.current_group) * rgs;
             if first_rid_of_group >= self.total_rows {
+                if !self.summarized {
+                    self.summarized = true;
+                    tracing::debug!(
+                        pruned = self.pruned_groups,
+                        scanned = self.scanned_groups,
+                        "scan complete"
+                    );
+                }
                 return Ok(None);
             }
             let rg_dir = row_group_dir(&self.table_dir, self.current_group);
             self.current_group += 1;
 
             if self.group_pruned(&rg_dir)? {
+                self.pruned_groups += 1;
                 continue;
             }
+            self.scanned_groups += 1;
             if let Some(batch) = self.load_group(&rg_dir, first_rid_of_group)? {
                 return Ok(Some(batch));
             }
@@ -595,7 +621,14 @@ impl BatchScanState {
             match (header.int_min(), header.int_max()) {
                 // No live INT value in this group → a comparison matches nothing.
                 (Some(min), Some(max)) if group_can_match(pred.op, pred.value, min, max) => {}
-                _ => return Ok(true),
+                _ => {
+                    tracing::trace!(
+                        group = %rg_dir.display(),
+                        column = %pred.column,
+                        "row group pruned by zone map"
+                    );
+                    return Ok(true);
+                }
             }
         }
         Ok(false)

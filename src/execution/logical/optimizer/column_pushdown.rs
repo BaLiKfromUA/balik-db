@@ -18,7 +18,10 @@ use super::LogicalPlan;
 pub(super) fn apply(plan: LogicalPlan) -> LogicalPlan {
     let needed = needed_columns(&plan);
     match needed {
-        Some(columns) => set_scan_columns(plan, columns),
+        Some(columns) => {
+            tracing::debug!(columns = ?columns, "column pushdown: stamped scan columns");
+            set_scan_columns(plan, columns)
+        }
         None => plan,
     }
 }

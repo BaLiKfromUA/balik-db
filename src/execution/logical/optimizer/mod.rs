@@ -20,6 +20,7 @@ use super::LogicalPlan;
 /// Top-K runs first so column pushdown sees the fused `TopK` and still collects
 /// its ordering column; the rules are otherwise independent.
 pub fn optimize(plan: LogicalPlan) -> LogicalPlan {
+    tracing::debug!("optimizing logical plan");
     let plan = top_k::apply(plan);
     column_pushdown::apply(plan)
 }

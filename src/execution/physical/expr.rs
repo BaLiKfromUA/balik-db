@@ -23,7 +23,10 @@ pub(super) fn evaluate_predicate(
     predicate: &Expr,
     batch: &ColumnBatch,
 ) -> Result<Vec<bool>, Error> {
-    eval_mask(predicate, batch)
+    let mask = eval_mask(predicate, batch)?;
+    let kept = mask.iter().filter(|&&keep| keep).count();
+    tracing::trace!(kept, total = mask.len(), "evaluated filter predicate");
+    Ok(mask)
 }
 
 /// One side of a comparison, resolved against the batch: either a real column

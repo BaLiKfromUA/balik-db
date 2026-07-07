@@ -39,8 +39,26 @@ pub fn parse(sql: &str) -> Result<Statement, ParseError> {
 
     match statements.len() {
         0 => Err(ParseError::new("empty input: expected a SQL statement")),
-        1 => lower::lower_statement(statements.pop().unwrap()),
+        1 => {
+            let statement = lower::lower_statement(statements.pop().unwrap())?;
+            tracing::debug!(statement = statement_kind(&statement), "parsed SQL statement");
+            Ok(statement)
+        }
         _ => Err(ParseError::new("expected a single SQL statement per query")),
+    }
+}
+
+/// A short, stable label naming a statement's kind, for logging.
+fn statement_kind(statement: &Statement) -> &'static str {
+    match statement {
+        Statement::CreateTable(_) => "CREATE TABLE",
+        Statement::Insert(_) => "INSERT",
+        Statement::Select(_) => "SELECT",
+        Statement::DropTable(_) => "DROP TABLE",
+        Statement::ShowTables => "SHOW TABLES",
+        Statement::Describe(_) => "DESCRIBE",
+        Statement::Delete(_) => "DELETE",
+        Statement::Update(_) => "UPDATE",
     }
 }
 

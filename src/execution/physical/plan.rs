@@ -102,6 +102,29 @@ pub enum PhysicalPlan {
     },
 }
 
+impl PhysicalPlan {
+    /// A short, stable label for this node's operator, for logging. Unlike
+    /// `Display` (which renders the whole tree) this is a single word naming
+    /// only the root.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            PhysicalPlan::CreateTableExec { .. } => "CreateTableExec",
+            PhysicalPlan::InsertExec { .. } => "InsertExec",
+            PhysicalPlan::DropTableExec { .. } => "DropTableExec",
+            PhysicalPlan::ShowTablesExec => "ShowTablesExec",
+            PhysicalPlan::DescribeExec { .. } => "DescribeExec",
+            PhysicalPlan::DeleteExec { .. } => "DeleteExec",
+            PhysicalPlan::UpdateExec { .. } => "UpdateExec",
+            PhysicalPlan::TableScanExec { .. } => "TableScanExec",
+            PhysicalPlan::FilterExec { .. } => "FilterExec",
+            PhysicalPlan::ProjectionExec { .. } => "ProjectionExec",
+            PhysicalPlan::SortExec { .. } => "SortExec",
+            PhysicalPlan::LimitExec { .. } => "LimitExec",
+            PhysicalPlan::TopKExec { .. } => "TopKExec",
+        }
+    }
+}
+
 impl fmt::Display for PhysicalPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt_indented(f, 0)
