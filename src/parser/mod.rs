@@ -41,7 +41,10 @@ pub fn parse(sql: &str) -> Result<Statement, ParseError> {
         0 => Err(ParseError::new("empty input: expected a SQL statement")),
         1 => {
             let statement = lower::lower_statement(statements.pop().unwrap())?;
-            tracing::debug!(statement = statement_kind(&statement), "parsed SQL statement");
+            tracing::debug!(
+                statement = statement_kind(&statement),
+                "parsed SQL statement"
+            );
             Ok(statement)
         }
         _ => Err(ParseError::new("expected a single SQL statement per query")),
