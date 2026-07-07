@@ -13,12 +13,28 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args = cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_max_level(args.verbose.tracing_level_filter())
+    // Drive our own log level from `-v`/`-q`, but cap the noisy `sqlparser`
+    // dependency — which emits a flood of debug/trace records while tokenizing —
+    // at warn so it never drowns out the pipeline logs. The cap is also bounded
+    // by the global level, so `-q` still silences everything.
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    let level = args.verbose.tracing_level_filter();
+    let filter = Targets::new()
+        .with_default(level)
+        .with_target("sqlparser", level.min(LevelFilter::WARN));
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout)
         .with_ansi(std::io::stdout().is_terminal())
         .without_time()
-        .with_target(false)
+        .with_target(false);
+
+    tracing_subscriber::registry()
+        .with(fmt_layer.with_filter(filter))
         .init();
 
     tracing::debug!(?args.command, "dispatching command");

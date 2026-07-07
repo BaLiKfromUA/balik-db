@@ -71,11 +71,10 @@ pub(super) fn execute_stream<'a>(
             // `scan_batches` returns a fully owned iterator, so the local handle
             // can drop here; the stream reads through the `store` borrow alone.
             let batches = store.scan_batches(&handle, projection.as_deref(), prune)?;
-            Ok(Box::new(batches.map(|batch| {
-                if let Ok(batch) = &batch {
+            Ok(Box::new(batches.inspect(|batch| {
+                if let Ok(batch) = batch {
                     tracing::trace!(rows = batch.num_rows(), "scan emitted batch");
                 }
-                batch
             })))
         }
         PhysicalPlan::FilterExec { predicate, input } => {
