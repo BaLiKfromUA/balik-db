@@ -105,6 +105,29 @@ pub enum LogicalPlan {
     },
 }
 
+impl LogicalPlan {
+    /// A short, stable label for this node's operator, for logging. Unlike
+    /// `Display` (which renders the whole tree) this is a single word naming
+    /// only the root.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            LogicalPlan::CreateTable { .. } => "CreateTable",
+            LogicalPlan::Insert { .. } => "Insert",
+            LogicalPlan::DropTable { .. } => "DropTable",
+            LogicalPlan::ShowTables => "ShowTables",
+            LogicalPlan::Describe { .. } => "Describe",
+            LogicalPlan::Delete { .. } => "Delete",
+            LogicalPlan::Update { .. } => "Update",
+            LogicalPlan::Scan { .. } => "Scan",
+            LogicalPlan::Filter { .. } => "Filter",
+            LogicalPlan::Projection { .. } => "Projection",
+            LogicalPlan::Sort { .. } => "Sort",
+            LogicalPlan::Limit { .. } => "Limit",
+            LogicalPlan::TopK { .. } => "TopK",
+        }
+    }
+}
+
 impl fmt::Display for LogicalPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt_indented(f, 0)

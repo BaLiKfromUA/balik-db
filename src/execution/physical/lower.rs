@@ -21,7 +21,9 @@ use super::prune::extract_scan_predicates;
 
 /// Lower a logical plan into a physical plan.
 pub fn lower(plan: &LogicalPlan) -> PhysicalPlan {
-    lower_node(plan, &[])
+    let physical = lower_node(plan, &[]);
+    tracing::debug!(root = physical.kind(), "lowered to physical plan");
+    physical
 }
 
 /// `prune` carries the hints extracted from an enclosing `Filter` down to the

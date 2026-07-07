@@ -19,12 +19,15 @@ pub(super) fn apply(plan: LogicalPlan) -> LogicalPlan {
                 column,
                 descending,
                 input,
-            } => LogicalPlan::TopK {
-                column,
-                descending,
-                count,
-                input,
-            },
+            } => {
+                tracing::debug!(column = %column, count, "fused Sort+Limit into TopK");
+                LogicalPlan::TopK {
+                    column,
+                    descending,
+                    count,
+                    input,
+                }
+            }
             other => LogicalPlan::Limit {
                 count,
                 input: Box::new(other),

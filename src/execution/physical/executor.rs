@@ -28,7 +28,7 @@ use super::result::{QueryResult, collect_rows};
 /// Execute `plan` against `store`, returning its result. DDL/DML mutate storage
 /// and report an effect; a relational plan is drained into rows.
 pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResult, Error> {
-    match plan {
+    let result = match plan {
         PhysicalPlan::CreateTableExec { table, columns } => {
             exec_create_table(table, columns, store)
         }
@@ -47,7 +47,12 @@ pub fn execute(plan: &PhysicalPlan, store: &mut dyn Storage) -> Result<QueryResu
             let stream = execute_stream(plan, &*store)?;
             collect_rows(names, stream)
         }
+    }?;
+    match &result {
+        QueryResult::Rows { rows, .. } => tracing::debug!(rows = rows.len(), "query produced rows"),
+        QueryResult::Affected(msg) => tracing::debug!(effect = %msg, "statement executed"),
     }
+    Ok(result)
 }
 
 /// Build the lazy batch stream for a relational operator. Borrows `store` for
@@ -65,7 +70,12 @@ pub(super) fn execute_stream<'a>(
             let handle = store.open_table(table)?;
             // `scan_batches` returns a fully owned iterator, so the local handle
             // can drop here; the stream reads through the `store` borrow alone.
-            store.scan_batches(&handle, projection.as_deref(), prune)
+            let batches = store.scan_batches(&handle, projection.as_deref(), prune)?;
+            Ok(Box::new(batches.inspect(|batch| {
+                if let Ok(batch) = batch {
+                    tracing::trace!(rows = batch.num_rows(), "scan emitted batch");
+                }
+            })))
         }
         PhysicalPlan::FilterExec { predicate, input } => {
             let source = execute_stream(input, store)?;

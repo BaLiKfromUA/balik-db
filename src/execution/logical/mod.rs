@@ -21,5 +21,7 @@ use crate::storage::Storage;
 /// Build a validated logical plan for `stmt`, using `storage`'s catalog to
 /// resolve and check table and column references.
 pub fn plan(stmt: &Statement, storage: &dyn Storage) -> Result<LogicalPlan, Error> {
-    binder::bind(stmt, storage)
+    let plan = binder::bind(stmt, storage)?;
+    tracing::debug!(root = plan.kind(), "built logical plan");
+    Ok(plan)
 }
