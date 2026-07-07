@@ -85,6 +85,16 @@ echo "Plan WITH optimization:"
 "$BIN" explain --db "$DB_DIR" --optimize --sql "$QUERY"
 echo
 
+# Run each variant once at -vv so the pipeline debug logs (optimizer rules fired,
+# scan projection, row groups pruned vs scanned) are visible alongside the plans.
+# The timing runs below stay silent so logging overhead never distorts them.
+echo "Run WITHOUT optimization (-vv debug logs):"
+"$BIN" -vv query --db "$DB_DIR" --sql "$QUERY"
+echo
+echo "Run WITH optimization (-vv debug logs):"
+"$BIN" -vv query --db "$DB_DIR" --optimize --sql "$QUERY"
+echo
+
 echo "Timing (lower is better):"
 if command -v hyperfine >/dev/null 2>&1; then
   hyperfine --warmup 1 --runs 10 \
